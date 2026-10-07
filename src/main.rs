@@ -378,11 +378,13 @@ struct Setup {
     abil: [usize; 2],
     trail: usize,
     color: usize,
+    death: usize,   // index into DEATH_NAMES (10 = random)
+    victory: usize, // index into VICTORY_NAMES (10 = random)
 }
 
 impl Setup {
     fn new(kind: usize) -> Self {
-        Setup { kind, abil: KINDS[kind].default_loadout(), trail: 1, color: 0 }
+        Setup { kind, abil: KINDS[kind].default_loadout(), trail: 1, color: 0, death: 0, victory: 0 }
     }
 }
 
@@ -445,11 +447,12 @@ struct Particle {
     shape: Shape,
     grow: bool,
     grav: f32,
+    spin: f32, // degrees per second
 }
 
 impl Particle {
     fn new(x: f32, y: f32, vx: f32, vy: f32, life: f32, size: f32, color: Color, shape: Shape) -> Self {
-        Particle { x, y, vx, vy, life, max: life, size, rot: 0.0, color, shape, grow: false, grav: 0.0 }
+        Particle { x, y, vx, vy, life, max: life, size, rot: 0.0, color, shape, grow: false, grav: 0.0, spin: 0.0 }
     }
 }
 
@@ -495,6 +498,14 @@ struct Meteor {
     vx: f32,
     vy: f32,
     falling: bool,
+}
+
+// neon arcade: a horizontal laser beam that warns, then sweeps the whole screen
+struct Laser {
+    y: f32,
+    t: f32,
+    fired: bool,
+    vis: f32,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -544,8 +555,10 @@ struct World {
     parts: Vec<Particle>,
     strikes: Vec<Strike>,
     meteors: Vec<Meteor>,
+    lasers: Vec<Laser>,
     pickups: Vec<Pickup>,
     banner: Option<(String, Color, f32)>, // big ultimate / event text
+    grav_scale: f32,                      // map events can make gravity lighter
     rng: Rng,
     fx: Fx,
 }
@@ -558,8 +571,10 @@ impl World {
             parts: Vec::new(),
             strikes: Vec::new(),
             meteors: Vec::new(),
+            lasers: Vec::new(),
             pickups: Vec::new(),
             banner: None,
+            grav_scale: 1.0,
             rng: Rng(2463534242),
             fx: Fx { shake: 0.0, hitstop: 0.0, punch: 0.0, flash: 0.0 },
         }
@@ -571,8 +586,10 @@ impl World {
         self.parts.clear();
         self.strikes.clear();
         self.meteors.clear();
+        self.lasers.clear();
         self.pickups.clear();
         self.banner = None;
+        self.grav_scale = 1.0;
         self.fx = Fx { shake: 0.0, hitstop: 0.0, punch: 0.0, flash: 0.0 };
     }
 
@@ -615,6 +632,7 @@ fn update_particles(parts: &mut Vec<Particle>, dt: f32) {
         q.vy += q.grav * dt;
         q.x += q.vx * dt;
         q.y += q.vy * dt;
+        q.rot += q.spin * dt;
         q.life -= dt;
     }
     parts.retain(|q| q.life > 0.0);
@@ -820,6 +838,7 @@ struct Player {
     power_t: f32,
     haste_t: f32,
     dead_t: f32,
+    invuln: bool, // the champion during a victory cutscene
 }
 
 impl Player {
@@ -874,6 +893,7 @@ impl Player {
             power_t: 0.0,
             haste_t: 0.0,
             dead_t: 0.0,
+            invuln: false,
         };
         p.apply_setup(setup);
         p
@@ -911,7 +931,7 @@ impl Player {
     // damage + knockback. Shield blocks everything, a well-timed block parries,
     // a held block takes a fraction of the hit and no knockback.
     fn hurt(&mut self, dmg: f32, kx: f32, ky: f32) {
-        if self.dead_t > 0.0 || self.shield_t > 0.0 {
+        if self.dead_t > 0.0 || self.shield_t > 0.0 || self.invuln {
             return;
         }
         if self.parry_t > 0.0 {
@@ -948,9 +968,23 @@ enum Theme {
     Meadow,
     Skyline,
     Volcano,
+    Frozen,
+    Space,
+    Sea,
+    Sand,
+    Neon,
 }
 
-const THEMES: [Theme; 3] = [Theme::Meadow, Theme::Skyline, Theme::Volcano];
+const THEMES: [Theme; 8] = [
+    Theme::Meadow,
+    Theme::Skyline,
+    Theme::Volcano,
+    Theme::Frozen,
+    Theme::Space,
+    Theme::Sea,
+    Theme::Sand,
+    Theme::Neon,
+];
 
 impl Theme {
     fn name(self) -> &'static str {
@@ -958,6 +992,11 @@ impl Theme {
             Theme::Meadow => "SUNNY MEADOW",
             Theme::Skyline => "NIGHT SKYLINE",
             Theme::Volcano => "VOLCANO",
+            Theme::Frozen => "FROZEN PEAKS",
+            Theme::Space => "DEEP SPACE",
+            Theme::Sea => "DEEP SEA",
+            Theme::Sand => "SAND RUINS",
+            Theme::Neon => "NEON ARCADE",
         }
     }
     fn blurb(self) -> &'static str {
@@ -965,6 +1004,11 @@ impl Theme {
             Theme::Meadow => "open hills, wind gusts push everyone",
             Theme::Skyline => "rooftops and towers, meteors fall",
             Theme::Volcano => "lava surges and meteors - stay off the floor!",
+            Theme::Frozen => "icy ledges, blizzards shove you around",
+            Theme::Space => "zero-g bursts and falling comets",
+            Theme::Sea => "floaty water and shifting currents",
+            Theme::Sand => "crumbling ruins, rocks fall from the sky",
+            Theme::Neon => "sweeping laser beams - watch the warnings",
         }
     }
 }
@@ -1030,6 +1074,88 @@ fn make_map(theme: Theme) -> Map {
             zones: vec![z(560.0, 440.0, 160.0, 80.0), z(330.0, 320.0, 160.0, 80.0), z(790.0, 320.0, 160.0, 80.0)],
             spawns: [120.0, W as f32 - 120.0 - SIZE],
         },
+        Theme::Frozen => Map {
+            solids: vec![
+                floor,
+                b(590.0, floor_y - 70.0, 100.0, 70.0), // center ice block
+                b(300.0, 560.0, 120.0, 120.0),         // ice pillars
+                b(860.0, 560.0, 120.0, 120.0),
+                b(120.0, 470.0, 200.0, 20.0),
+                b(960.0, 470.0, 200.0, 20.0),
+                b(540.0, 400.0, 200.0, 20.0),
+                b(300.0, 300.0, 160.0, 20.0),
+                b(820.0, 300.0, 160.0, 20.0),
+            ],
+            hazard: None,
+            zones: vec![z(540.0, 320.0, 200.0, 80.0), z(120.0, 390.0, 200.0, 80.0), z(960.0, 390.0, 200.0, 80.0)],
+            spawns: [100.0, W as f32 - 100.0 - SIZE],
+        },
+        Theme::Space => Map {
+            solids: vec![
+                floor,
+                b(600.0, 600.0, 80.0, 80.0), // central station block
+                b(100.0, 540.0, 180.0, 20.0),
+                b(1000.0, 540.0, 180.0, 20.0),
+                b(300.0, 430.0, 160.0, 20.0),
+                b(820.0, 430.0, 160.0, 20.0),
+                b(560.0, 340.0, 160.0, 20.0),
+                b(120.0, 300.0, 140.0, 20.0),
+                b(1020.0, 300.0, 140.0, 20.0),
+            ],
+            hazard: None,
+            zones: vec![z(560.0, 260.0, 160.0, 80.0), z(300.0, 350.0, 160.0, 80.0), z(820.0, 350.0, 160.0, 80.0)],
+            spawns: [120.0, W as f32 - 120.0 - SIZE],
+        },
+        Theme::Sea => Map {
+            solids: vec![
+                floor,
+                b(200.0, 590.0, 160.0, 90.0), // coral mounds
+                b(920.0, 590.0, 160.0, 90.0),
+                b(540.0, 560.0, 200.0, 120.0), // shipwreck hull
+                b(580.0, 480.0, 120.0, 20.0),  // ship's deck
+                b(80.0, 430.0, 180.0, 20.0),
+                b(1020.0, 430.0, 180.0, 20.0),
+                b(330.0, 360.0, 160.0, 20.0),
+                b(790.0, 360.0, 160.0, 20.0),
+            ],
+            hazard: None,
+            zones: vec![z(580.0, 400.0, 120.0, 80.0), z(330.0, 280.0, 160.0, 80.0), z(790.0, 280.0, 160.0, 80.0)],
+            spawns: [100.0, W as f32 - 100.0 - SIZE],
+        },
+        Theme::Sand => Map {
+            solids: vec![
+                floor,
+                b(540.0, 620.0, 200.0, 60.0), // stepped pyramid
+                b(580.0, 560.0, 120.0, 60.0),
+                b(620.0, 500.0, 40.0, 60.0),
+                b(180.0, 520.0, 40.0, 160.0), // temple pillars
+                b(1060.0, 520.0, 40.0, 160.0),
+                b(140.0, 500.0, 120.0, 20.0),
+                b(1020.0, 500.0, 120.0, 20.0),
+                b(330.0, 420.0, 200.0, 20.0),
+                b(750.0, 420.0, 200.0, 20.0),
+                b(540.0, 330.0, 200.0, 20.0),
+            ],
+            hazard: None,
+            zones: vec![z(540.0, 250.0, 200.0, 80.0), z(330.0, 340.0, 200.0, 80.0), z(750.0, 340.0, 200.0, 80.0)],
+            spawns: [90.0, W as f32 - 90.0 - SIZE],
+        },
+        Theme::Neon => Map {
+            solids: vec![
+                floor,
+                b(600.0, 600.0, 80.0, 80.0), // center cabinet
+                b(60.0, 540.0, 200.0, 20.0),
+                b(1020.0, 540.0, 200.0, 20.0),
+                b(300.0, 450.0, 150.0, 20.0),
+                b(830.0, 450.0, 150.0, 20.0),
+                b(565.0, 360.0, 150.0, 20.0),
+                b(60.0, 300.0, 160.0, 20.0),
+                b(1060.0, 300.0, 160.0, 20.0),
+            ],
+            hazard: None,
+            zones: vec![z(565.0, 280.0, 150.0, 80.0), z(300.0, 370.0, 150.0, 80.0), z(830.0, 370.0, 150.0, 80.0)],
+            spawns: [110.0, W as f32 - 110.0 - SIZE],
+        },
     }
 }
 
@@ -1047,6 +1173,8 @@ struct Round {
     meteor_t: f32,
     wind: f32,
     wind_warn: bool,
+    zerog: bool,
+    zerog_warn: bool,
     combo: [u32; 2],
     combo_t: [f32; 2],
     combo_show: [f32; 2],
@@ -1064,6 +1192,8 @@ impl Round {
             meteor_t: 4.0,
             wind: 0.0,
             wind_warn: false,
+            zerog: false,
+            zerog_warn: false,
             combo: [0, 0],
             combo_t: [0.0, 0.0],
             combo_show: [0.0, 0.0],
@@ -1157,12 +1287,12 @@ fn collide_players(pl: &mut [Player; 2], solids: &[Solid]) {
     }
 }
 
-fn step_once(p: &mut Player, solids: &[Solid], dt: f32) {
+fn step_once(p: &mut Player, solids: &[Solid], dt: f32, gs: f32) {
     p.x += p.vx * dt;
     push_out_x(p, solids);
 
     if p.dash_t <= 0.0 {
-        p.vy += GRAVITY * p.kind.grav() * dt;
+        p.vy += GRAVITY * p.kind.grav() * gs * dt;
     }
     let prev_bottom = p.y + SIZE;
     p.y += p.vy * dt;
@@ -1203,11 +1333,11 @@ fn wall_side(p: &Player, solids: &[Solid]) -> f32 {
 }
 
 // move + collide; fast movers are split into small steps so nobody tunnels
-fn step(p: &mut Player, solids: &[Solid], dt: f32) {
+fn step(p: &mut Player, solids: &[Solid], dt: f32, gs: f32) {
     let moves = (p.vx.abs().max(p.vy.abs()) * dt / 20.0).ceil().clamp(1.0, 8.0) as i32;
     let sub = dt / moves as f32;
     for _ in 0..moves {
-        step_once(p, solids, sub);
+        step_once(p, solids, sub, gs);
     }
     clamp_to_arena(p);
     p.wall_dir = wall_side(p, solids);
@@ -1679,40 +1809,118 @@ fn update_meteors(players: &mut [Player; 2], solids: &[Solid], w: &mut World, dt
     w.meteors = keep;
 }
 
-fn update_events(theme: Theme, rd: &mut Round, players: &mut [Player; 2], solids: &[Solid], w: &mut World, dt: f32) {
-    match theme {
-        Theme::Meadow => {
-            let cyc = rd.time % 14.0;
-            let n = (rd.time / 14.0) as i32;
-            let dir: f32 = if n % 2 == 0 { 1.0 } else { -1.0 };
-            rd.wind = if cyc >= 10.0 { dir } else { 0.0 };
-            rd.wind_warn = (8.0..10.0).contains(&cyc);
-            if rd.wind != 0.0 {
+fn update_lasers(players: &mut [Player; 2], w: &mut World, dt: f32) {
+    let lasers = std::mem::take(&mut w.lasers);
+    let mut keep = Vec::new();
+    for mut l in lasers {
+        if !l.fired {
+            l.t -= dt;
+            if l.t <= 0.0 {
+                l.fired = true;
+                l.vis = 0.4;
+                let beam = Rectangle::new(0.0, l.y - 22.0, W as f32, 44.0);
                 for p in players.iter_mut() {
-                    if p.dead_t <= 0.0 {
-                        p.x += rd.wind * 140.0 * dt;
-                        push_out_x(p, solids);
+                    if overlaps(&beam, &p.rect()) {
+                        p.hurt(18.0, 0.0, -300.0);
                     }
                 }
-                for _ in 0..2 {
-                    let sx = if rd.wind > 0.0 { -10.0 } else { W as f32 + 10.0 };
-                    let y = w.rng.range(0.0, H as f32 - FLOOR_H);
-                    let vx = rd.wind * w.rng.range(700.0, 1000.0);
-                    let q = Particle::new(sx, y, vx, w.rng.range(-30.0, 30.0), 2.0, 3.0, Color::new(255, 255, 255, 150), Shape::Streak);
+                w.fx.flash = w.fx.flash.max(0.3);
+                w.shake(14.0);
+                for k in 0..22 {
+                    let x = k as f32 * 60.0;
+                    let q = Particle::new(x, l.y, w.rng.range(-80.0, 80.0), w.rng.range(-200.0, 200.0), 0.5, 4.0, Color::new(255, 80, 220, 255), Shape::Star);
                     w.parts.push(q);
                 }
             }
+        } else {
+            l.vis -= dt;
         }
-        Theme::Skyline | Theme::Volcano => {
+        if !(l.fired && l.vis <= 0.0) {
+            keep.push(l);
+        }
+    }
+    w.lasers = keep;
+}
+
+// gusting wind / blizzard / currents: (cycle length, warning starts, gust starts, drift speed)
+fn wind_params(theme: Theme) -> Option<(f32, f32, f32, f32)> {
+    match theme {
+        Theme::Meadow => Some((14.0, 8.0, 10.0, 140.0)),
+        Theme::Frozen => Some((11.0, 6.0, 8.0, 210.0)),
+        Theme::Sea => Some((10.0, 5.0, 7.0, 170.0)),
+        _ => None,
+    }
+}
+
+fn update_events(theme: Theme, rd: &mut Round, players: &mut [Player; 2], solids: &[Solid], w: &mut World, dt: f32) {
+    // default: normal gravity; events below may change it
+    w.grav_scale = if theme == Theme::Sea { 0.65 } else { 1.0 };
+
+    if let Some((cycle_len, warn_at, gust_at, speed)) = wind_params(theme) {
+        let cyc = rd.time % cycle_len;
+        let n = (rd.time / cycle_len) as i32;
+        let dir: f32 = if n % 2 == 0 { 1.0 } else { -1.0 };
+        rd.wind = if cyc >= gust_at { dir } else { 0.0 };
+        rd.wind_warn = cyc >= warn_at && cyc < gust_at;
+        if rd.wind != 0.0 {
+            for p in players.iter_mut() {
+                if p.dead_t <= 0.0 {
+                    p.x += rd.wind * speed * dt;
+                    push_out_x(p, solids);
+                }
+            }
+            let streak = match theme {
+                Theme::Sea => Color::new(200, 240, 255, 130),
+                Theme::Frozen => Color::new(255, 255, 255, 190),
+                _ => Color::new(255, 255, 255, 150),
+            };
+            for _ in 0..2 {
+                let sx = if rd.wind > 0.0 { -10.0 } else { W as f32 + 10.0 };
+                let y = w.rng.range(0.0, H as f32 - FLOOR_H);
+                let vx = rd.wind * w.rng.range(700.0, 1000.0);
+                let q = Particle::new(sx, y, vx, w.rng.range(-30.0, 30.0), 2.0, 3.0, streak, Shape::Streak);
+                w.parts.push(q);
+            }
+        }
+    }
+
+    match theme {
+        Theme::Skyline | Theme::Volcano | Theme::Sand | Theme::Space => {
             rd.meteor_t -= dt;
             if rd.meteor_t <= 0.0 {
-                rd.meteor_t = if theme == Theme::Skyline { w.rng.range(4.0, 6.5) } else { w.rng.range(3.5, 5.5) };
+                rd.meteor_t = match theme {
+                    Theme::Skyline => w.rng.range(4.0, 6.5),
+                    Theme::Volcano => w.rng.range(3.5, 5.5),
+                    Theme::Sand => w.rng.range(3.0, 4.5),
+                    _ => w.rng.range(5.5, 8.0),
+                };
                 let tx = w.rng.range(100.0, W as f32 - 100.0);
                 w.meteors.push(Meteor { tx, warn: 1.0, x: 0.0, y: 0.0, vx: 0.0, vy: 0.0, falling: false });
             }
         }
+        Theme::Neon => {
+            rd.meteor_t -= dt;
+            if rd.meteor_t <= 0.0 {
+                rd.meteor_t = w.rng.range(3.5, 5.5);
+                let y = w.rng.range(140.0, H as f32 - FLOOR_H - 50.0);
+                w.lasers.push(Laser { y, t: 1.1, fired: false, vis: 0.0 });
+            }
+        }
+        _ => {}
     }
+
+    if theme == Theme::Space {
+        // periodic zero-g: everything floats
+        let cyc = rd.time % 16.0;
+        rd.zerog = cyc >= 10.0;
+        rd.zerog_warn = (8.0..10.0).contains(&cyc);
+        if rd.zerog {
+            w.grav_scale = 0.3;
+        }
+    }
+
     update_meteors(players, solids, w, dt);
+    update_lasers(players, w, dt);
 }
 
 fn update_pickups(players: &mut [Player; 2], solids: &[Solid], rd: &mut Round, w: &mut World, dt: f32) {
@@ -1973,7 +2181,7 @@ fn update_player(inp: &Input, me: &mut Player, foe: &mut Player, my_idx: usize, 
         me.melee_hit = false;
     }
 
-    step(me, solids, dt);
+    step(me, solids, dt, w.grav_scale);
 
     if me.melee_t > 0.0 && !me.melee_hit {
         let progress = 1.0 - me.melee_t / MELEE_TIME;
@@ -2070,7 +2278,7 @@ fn emit_trail(p: &mut Player, w: &mut World, t: f32, dt: f32) {
 
 // pixel-style knife, drawn from rectangles. (px, py) is the handle end,
 // theta is degrees clockwise from straight up, flip = 1 or -1 (facing).
-fn draw_knife(d: &mut impl RaylibDraw, px: f32, py: f32, theta: f32, flip: f32) {
+fn draw_knife(d: &mut impl RaylibDraw, px: f32, py: f32, theta: f32, flip: f32, scale: f32) {
     let steel = Color::new(130, 180, 200, 255);
     let wood = Color::new(140, 85, 40, 255);
     let dark_wood = Color::new(90, 55, 25, 255);
@@ -2088,9 +2296,9 @@ fn draw_knife(d: &mut impl RaylibDraw, px: f32, py: f32, theta: f32, flip: f32) 
     ];
     let (s, c) = theta.to_radians().sin_cos();
     for (x0, y0, x1, y1, col) in parts {
-        let (w, h) = (x1 - x0, y1 - y0);
-        let lx = (x0 + x1) / 2.0 * flip;
-        let ly = (y0 + y1) / 2.0;
+        let (w, h) = ((x1 - x0) * scale, (y1 - y0) * scale);
+        let lx = (x0 + x1) / 2.0 * flip * scale;
+        let ly = (y0 + y1) / 2.0 * scale;
         let cx = px + lx * c - ly * s;
         let cy = py + lx * s + ly * c;
         d.draw_rectangle_pro(Rectangle::new(cx, cy, w, h), Vector2::new(w / 2.0, h / 2.0), theta, col);
@@ -2166,7 +2374,7 @@ fn draw_player(d: &mut impl RaylibDraw, p: &Player, t: f32) {
     if p.melee_t > 0.0 {
         let progress = 1.0 - p.melee_t / MELEE_TIME;
         let angle = (-60.0 + 150.0 * progress) * p.facing; // raised -> slashed down
-        draw_knife(d, cx + p.facing * SIZE * 0.35, cy + SIZE * 0.1, angle, p.facing);
+        draw_knife(d, cx + p.facing * SIZE * 0.35, cy + SIZE * 0.1, angle, p.facing, 1.0);
         // slash arc
         if progress > 0.2 && progress < 0.9 {
             let a = (1.0 - progress) * 200.0;
@@ -2414,6 +2622,208 @@ fn draw_scenery(d: &mut impl RaylibDraw, theme: Theme, t: f32) {
                 d.draw_circle((ex.rem_euclid(W as f32)) as i32, ey as i32, 2.0, Color::new(255, 170, 50, 210));
             }
         }
+        Theme::Frozen => {
+            d.draw_rectangle_gradient_v(0, 0, W, H, Color::new(12, 22, 70, 255), Color::new(150, 200, 235, 255));
+            for i in 0..40 {
+                let tw = 120.0 + 100.0 * (t * 2.0 + i as f32).sin();
+                d.draw_rectangle((i * 541) % W, (i * 263) % 250, 2, 2, Color::new(255, 255, 255, tw as u8));
+            }
+            // aurora curtains
+            for i in 0..58 {
+                let x = i * 22;
+                for band in 0..2 {
+                    let bf = band as f32;
+                    let y = 70.0 + bf * 45.0 + 28.0 * (t * 0.6 + i as f32 * 0.22 + bf).sin();
+                    let h = 70.0 + 30.0 * (t * 0.4 + i as f32 * 0.15).sin();
+                    let c = if band == 0 { Color::new(70, 255, 160, 255) } else { Color::new(160, 100, 255, 255) };
+                    d.draw_rectangle_gradient_v(x, y as i32, 24, h as i32, with_alpha(c, 0), with_alpha(c, 70));
+                }
+            }
+            let v = |x: f32, y: f32| Vector2::new(x, y);
+            let snow = Color::new(240, 248, 255, 255);
+            tri(d, v(-120.0, ground), v(420.0, ground), v(150.0, 250.0), Color::new(140, 170, 210, 255));
+            tri(d, v(150.0, 250.0), v(95.0, 340.0), v(205.0, 340.0), snow);
+            tri(d, v(300.0, ground), v(900.0, ground), v(600.0, 190.0), Color::new(120, 155, 200, 255));
+            tri(d, v(600.0, 190.0), v(535.0, 290.0), v(665.0, 290.0), snow);
+            tri(d, v(760.0, ground), v(1400.0, ground), v(1090.0, 230.0), Color::new(140, 170, 210, 255));
+            tri(d, v(1090.0, 230.0), v(1030.0, 320.0), v(1150.0, 320.0), snow);
+            d.draw_ellipse(300, (ground + 50.0) as i32, 420.0, 90.0, Color::new(225, 238, 250, 255));
+            d.draw_ellipse(980, (ground + 50.0) as i32, 460.0, 100.0, Color::new(225, 238, 250, 255));
+            for px in [70.0_f32, 230.0, 1050.0, 1215.0] {
+                let green = Color::new(25, 80, 70, 255);
+                tri(d, v(px, ground - 130.0), v(px - 38.0, ground - 75.0), v(px + 38.0, ground - 75.0), green);
+                tri(d, v(px, ground - 100.0), v(px - 48.0, ground - 35.0), v(px + 48.0, ground - 35.0), green);
+                tri(d, v(px, ground - 65.0), v(px - 58.0, ground), v(px + 58.0, ground), green);
+                tri(d, v(px, ground - 130.0), v(px - 14.0, ground - 112.0), v(px + 14.0, ground - 112.0), snow);
+            }
+            // falling snow
+            for i in 0..90 {
+                let fx = ((i * 97) as f32 + (t * 0.8 + i as f32).sin() * 30.0).rem_euclid(W as f32);
+                let fy = (t * 70.0 + (i * 41) as f32) % H as f32;
+                d.draw_circle(fx as i32, fy as i32, 1.5 + (i % 3) as f32, Color::new(255, 255, 255, 220));
+            }
+        }
+        Theme::Space => {
+            d.draw_rectangle_gradient_v(0, 0, W, H, Color::new(2, 2, 16, 255), Color::new(45, 12, 70, 255));
+            for (cx, cy, r, col) in [
+                (300, 220, 230.0, Color::new(120, 40, 170, 26)),
+                (900, 160, 260.0, Color::new(200, 60, 120, 20)),
+                (1050, 470, 220.0, Color::new(60, 90, 200, 24)),
+                (200, 520, 200.0, Color::new(60, 160, 170, 18)),
+            ] {
+                d.draw_circle(cx, cy, r, col);
+                d.draw_circle(cx, cy, r * 0.65, col);
+            }
+            for i in 0..150 {
+                let tw = 140.0 + 100.0 * (t * 2.0 + i as f32).sin();
+                let sz = if i % 11 == 0 { 3 } else if i % 4 == 0 { 2 } else { 1 };
+                d.draw_rectangle((i * 677) % W, (i * 353) % (H - 40), sz, sz, Color::new(255, 255, 255, tw as u8));
+            }
+            // ringed planet
+            d.draw_circle(930, 170, 115.0, Color::new(205, 125, 75, 255));
+            for k in 0..5 {
+                let y = 170.0 + (k as f32 - 2.0) * 34.0;
+                let rh = (115.0f32 * 115.0 - (y - 170.0) * (y - 170.0)).max(0.0).sqrt();
+                let band = if k % 2 == 0 { Color::new(225, 160, 100, 255) } else { Color::new(180, 100, 60, 255) };
+                d.draw_ellipse(930, y as i32, rh, 9.0, band);
+            }
+            for (rh, rv) in [(200.0, 38.0), (185.0, 34.0), (170.0, 30.0)] {
+                d.draw_ellipse_lines(930, 175, rh, rv, Color::new(230, 200, 160, 190));
+            }
+            // small moon
+            d.draw_circle(170, 120, 38.0, Color::new(205, 205, 215, 255));
+            d.draw_circle(158, 110, 8.0, Color::new(170, 170, 185, 255));
+            d.draw_circle(182, 132, 6.0, Color::new(170, 170, 185, 255));
+            // shooting star
+            let sx = (t * 350.0) % (W as f32 + 500.0) - 250.0;
+            let sy = 60.0 + (t * 90.0) % 260.0;
+            d.draw_line_ex(Vector2::new(sx, sy), Vector2::new(sx - 120.0, sy - 40.0), 3.0, Color::new(255, 255, 255, 200));
+            // station silhouette along the bottom
+            for i in 0..14 {
+                let bw = 60 + (i * 31) % 40;
+                let bh = 40 + (i * 37) % 70;
+                let x = i * 95 - 10;
+                d.draw_rectangle(x, ground as i32 - bh, bw, bh, Color::new(25, 28, 52, 255));
+                if ((t * 2.0 + i as f32) % 2.0) < 1.0 {
+                    d.draw_rectangle(x + bw / 2, ground as i32 - bh - 8, 4, 8, Color::new(255, 60, 60, 255));
+                }
+            }
+        }
+        Theme::Sea => {
+            d.draw_rectangle_gradient_v(0, 0, W, H, Color::new(30, 125, 175, 255), Color::new(4, 18, 48, 255));
+            let v = |x: f32, y: f32| Vector2::new(x, y);
+            for i in 0..7 {
+                let x = 60.0 + i as f32 * 190.0 + (t * 0.3 + i as f32).sin() * 40.0;
+                tri(d, v(x, 0.0), v(x + 60.0, 0.0), v(x + 170.0, ground), Color::new(200, 240, 255, 16));
+            }
+            d.draw_ellipse(200, (ground + 20.0) as i32, 280.0, 140.0, Color::new(10, 50, 80, 255));
+            d.draw_ellipse(930, (ground + 20.0) as i32, 320.0, 150.0, Color::new(10, 50, 80, 255));
+            // fish swimming by
+            for i in 0..6 {
+                let x = (t * (50.0 + i as f32 * 8.0) + i as f32 * 230.0) % (W as f32 + 240.0) - 120.0;
+                let y = 130.0 + i as f32 * 68.0 + (t * 1.5 + i as f32).sin() * 12.0;
+                let col = match i % 3 {
+                    0 => Color::new(255, 170, 60, 230),
+                    1 => Color::new(255, 220, 90, 230),
+                    _ => Color::new(110, 190, 255, 230),
+                };
+                d.draw_ellipse(x as i32, y as i32, 18.0, 9.0, col);
+                tri(d, v(x - 14.0, y), v(x - 32.0, y - 9.0), v(x - 32.0, y + 9.0), col);
+                d.draw_circle(x as i32 + 9, y as i32 - 2, 2.0, Color::BLACK);
+            }
+            // jellyfish
+            for i in 0..3 {
+                let jx = 250.0 + i as f32 * 380.0;
+                let jy = 200.0 + (t + i as f32).sin() * 40.0;
+                d.draw_circle(jx as i32, jy as i32, 22.0, Color::new(255, 150, 220, 120));
+                for k in -2..=2 {
+                    let kx = jx + k as f32 * 7.0;
+                    d.draw_line_ex(v(kx, jy + 10.0), v(kx + (t * 2.0 + k as f32).sin() * 6.0, jy + 52.0), 2.0, Color::new(255, 170, 230, 120));
+                }
+            }
+            // bubbles
+            for i in 0..40 {
+                let bx = ((i * 83) as f32 + (t + i as f32).sin() * 15.0).rem_euclid(W as f32);
+                let by = H as f32 - ((t * 35.0 + (i * 47) as f32) % H as f32);
+                d.draw_circle_lines(bx as i32, by as i32, 2.0 + (i % 4) as f32, Color::new(220, 245, 255, 170));
+            }
+            // swaying seaweed
+            for x in (0..W).step_by(60) {
+                for s in 0..5 {
+                    let sx = x as f32 + (t * 1.4 + x as f32 * 0.04 + s as f32 * 0.6).sin() * 5.0 * s as f32;
+                    d.draw_rectangle(sx as i32, ground as i32 - 18 * (s + 1), 8, 18, Color::new(40, 150, 90, 255));
+                }
+            }
+        }
+        Theme::Sand => {
+            d.draw_rectangle_gradient_v(0, 0, W, H, Color::new(255, 160, 80, 255), Color::new(250, 225, 165, 255));
+            d.draw_circle(640, 250, 150.0, Color::new(255, 230, 170, 50));
+            d.draw_circle(640, 250, 105.0, Color::new(255, 240, 200, 120));
+            d.draw_circle(640, 250, 70.0, Color::new(255, 250, 230, 255));
+            let v = |x: f32, y: f32| Vector2::new(x, y);
+            let lit = Color::new(214, 165, 95, 255);
+            let shade = Color::new(180, 132, 72, 255);
+            tri(d, v(80.0, ground), v(520.0, ground), v(300.0, 300.0), lit);
+            tri(d, v(300.0, 300.0), v(520.0, ground), v(300.0, ground), shade);
+            tri(d, v(780.0, ground), v(1260.0, ground), v(1020.0, 350.0), lit);
+            tri(d, v(1020.0, 350.0), v(1260.0, ground), v(1020.0, ground), shade);
+            d.draw_ellipse(160, (ground + 30.0) as i32, 420.0, 100.0, Color::new(236, 192, 122, 255));
+            d.draw_ellipse(700, (ground + 40.0) as i32, 560.0, 110.0, Color::new(226, 180, 108, 255));
+            d.draw_ellipse(1180, (ground + 30.0) as i32, 420.0, 105.0, Color::new(236, 192, 122, 255));
+            d.draw_ellipse(420, (ground + 36.0) as i32, 380.0, 70.0, Color::new(214, 168, 98, 255));
+            d.draw_ellipse(950, (ground + 36.0) as i32, 380.0, 70.0, Color::new(214, 168, 98, 255));
+            for cx in [60.0_f32, 390.0, 1220.0] {
+                let green = Color::new(50, 140, 70, 255);
+                d.draw_rectangle(cx as i32 - 7, ground as i32 - 70, 14, 70, green);
+                d.draw_rectangle(cx as i32 - 24, ground as i32 - 48, 17, 8, green);
+                d.draw_rectangle(cx as i32 - 24, ground as i32 - 60, 8, 20, green);
+                d.draw_rectangle(cx as i32 + 7, ground as i32 - 38, 17, 8, green);
+                d.draw_rectangle(cx as i32 + 16, ground as i32 - 52, 8, 22, green);
+            }
+            for i in 0..4 {
+                let bx = (t * 70.0 + i as f32 * 300.0) % (W as f32 + 100.0) - 50.0;
+                let by = 100.0 + i as f32 * 30.0 + (t * 3.0 + i as f32).sin() * 8.0;
+                d.draw_line_ex(v(bx - 10.0, by), v(bx, by + 5.0), 2.0, Color::new(70, 50, 40, 255));
+                d.draw_line_ex(v(bx, by + 5.0), v(bx + 10.0, by), 2.0, Color::new(70, 50, 40, 255));
+            }
+            for i in 0..25 {
+                let x = (t * 180.0 + i as f32 * 53.0) % W as f32;
+                let y = ground - 10.0 - ((i * 13) % 160) as f32;
+                d.draw_line(x as i32, y as i32, x as i32 + 14, y as i32 + 1, Color::new(255, 235, 190, 150));
+            }
+        }
+        Theme::Neon => {
+            d.draw_rectangle_gradient_v(0, 0, W, H, Color::new(14, 0, 34, 255), Color::new(105, 0, 105, 255));
+            for i in 0..60 {
+                let tw = 120.0 + 100.0 * (t * 2.0 + i as f32).sin();
+                d.draw_rectangle((i * 613) % W, (i * 197) % 260, 2, 2, Color::new(255, 255, 255, tw as u8));
+            }
+            // retro sun with scanline stripes
+            d.draw_circle_gradient(640, 320, 170.0, Color::new(255, 230, 90, 255), Color::new(255, 40, 150, 255));
+            for k in 0..7 {
+                let y = 330.0 + k as f32 * 24.0;
+                let half = (170.0f32 * 170.0 - (y - 320.0) * (y - 320.0)).max(0.0).sqrt();
+                d.draw_rectangle((640.0 - half) as i32, y as i32, (half * 2.0) as i32, 3 + k * 2, Color::new(50, 0, 70, 255));
+            }
+            // neon skyline
+            for i in 0..12 {
+                let bh = 100 + (i * 47) % 150;
+                let x = i * 108 - 5;
+                let neon = if i % 2 == 0 { Color::new(0, 240, 255, 255) } else { Color::new(255, 60, 200, 255) };
+                d.draw_rectangle(x, 430 - bh, 90, bh, Color::new(18, 4, 40, 255));
+                d.draw_rectangle_lines(x, 430 - bh, 90, bh, neon);
+            }
+            // perspective grid floor
+            d.draw_rectangle_gradient_v(0, 430, W, H - 430, Color::new(30, 0, 60, 255), Color::new(90, 0, 120, 255));
+            for i in -14..=14 {
+                d.draw_line(640 + i * 28, 430, 640 + i * 190, H, Color::new(0, 240, 255, 110));
+            }
+            for k in 0..9 {
+                let f = ((k as f32 + (t * 0.5) % 1.0) / 9.0).powi(2);
+                let y = 430.0 + f * (H as f32 - 430.0);
+                d.draw_line(0, y as i32, W, y as i32, Color::new(255, 60, 200, 100));
+            }
+        }
     }
 }
 
@@ -2443,6 +2853,37 @@ fn draw_world(d: &mut impl RaylibDraw, theme: Theme, map: &Map, hazard: Option<R
             Theme::Volcano => {
                 d.draw_rectangle(x, y, wd, h, Color::new(52, 36, 38, 255));
                 d.draw_rectangle(x, y, wd, 5, Color::new(215, 90, 25, 255));
+            }
+            Theme::Frozen => {
+                d.draw_rectangle(x, y, wd, h, Color::new(150, 195, 225, 255));
+                d.draw_rectangle(x, y, wd, 8, Color::new(240, 250, 255, 255));
+                d.draw_rectangle(x + 4, y + 10, wd - 8, 2, Color::new(200, 230, 250, 255));
+            }
+            Theme::Space => {
+                d.draw_rectangle(x, y, wd, h, Color::new(48, 52, 80, 255));
+                d.draw_rectangle(x, y, wd, 4, Color::new(110, 200, 255, 255));
+                d.draw_rectangle_lines(x, y, wd, h, Color::new(110, 200, 255, 90));
+            }
+            Theme::Sea => {
+                d.draw_rectangle(x, y, wd, h, Color::new(55, 85, 100, 255));
+                d.draw_rectangle(x, y, wd, 6, Color::new(90, 175, 150, 255));
+                for k in 0..(wd / 36) {
+                    d.draw_circle(x + 18 + k * 36, y + 3, 3.0, Color::new(240, 140, 160, 255));
+                }
+            }
+            Theme::Sand => {
+                d.draw_rectangle(x, y, wd, h, Color::new(186, 146, 88, 255));
+                d.draw_rectangle(x, y, wd, 8, Color::new(232, 205, 135, 255));
+                let mut ly = y + 20;
+                while ly < y + h {
+                    d.draw_rectangle(x, ly, wd, 2, Color::new(160, 120, 70, 255));
+                    ly += 20;
+                }
+            }
+            Theme::Neon => {
+                d.draw_rectangle(x, y, wd, h, Color::new(22, 8, 48, 255));
+                d.draw_rectangle(x, y, wd, 4, Color::new(255, 60, 200, 255));
+                d.draw_rectangle_lines(x, y, wd, h, Color::new(0, 255, 255, 160));
             }
         }
     }
@@ -2476,6 +2917,21 @@ fn draw_world(d: &mut impl RaylibDraw, theme: Theme, map: &Map, hazard: Option<R
             d.draw_circle(m.x as i32, m.y as i32, 26.0, Color::new(255, 120, 30, 110));
             d.draw_circle(m.x as i32, m.y as i32, 16.0, Color::new(90, 60, 50, 255));
             d.draw_circle(m.x as i32 - 4, m.y as i32 - 4, 7.0, Color::new(255, 170, 60, 255));
+        }
+    }
+    // laser beams: red warning line first, then the beam
+    for l in &w.lasers {
+        if !l.fired {
+            let prog = (1.0 - l.t / 1.1).clamp(0.0, 1.0);
+            let pulse = 0.5 + 0.5 * (t * 20.0).sin();
+            d.draw_rectangle(0, (l.y - 22.0 * prog) as i32, W, (44.0 * prog) as i32 + 1, Color::new(255, 60, 120, (30.0 + 50.0 * pulse) as u8));
+            d.draw_rectangle(0, l.y as i32 - 2, W, 4, Color::new(255, 60, 80, (80.0 + 150.0 * prog) as u8));
+            text(d, "!", 14, l.y as i32 - 22, 44, Color::new(255, 80, 80, 255));
+            text(d, "!", W - 34, l.y as i32 - 22, 44, Color::new(255, 80, 80, 255));
+        } else {
+            let a = (l.vis / 0.4).clamp(0.0, 1.0);
+            d.draw_rectangle(0, (l.y - 26.0 * a) as i32, W, (52.0 * a) as i32 + 1, Color::new(255, 80, 220, (130.0 * a) as u8));
+            d.draw_rectangle(0, (l.y - 9.0 * a) as i32, W, (18.0 * a) as i32 + 1, Color::new(255, 255, 255, (255.0 * a) as u8));
         }
     }
     draw_strikes(d, &w.strikes, t);
@@ -2516,6 +2972,607 @@ fn draw_world(d: &mut impl RaylibDraw, theme: Theme, map: &Map, hazard: Option<R
     }
 }
 
+// =====================================================================
+// death animations: 10 + random (the loser picks how they go out)
+// =====================================================================
+
+const DEATH_NAMES: [&str; 11] = [
+    "SHATTER",
+    "EXPLODE",
+    "DISINTEGRATE",
+    "ASCEND",
+    "LIGHTNING",
+    "SPIN OFF",
+    "CONFETTI POP",
+    "FREEZE & CRACK",
+    "BLACK HOLE",
+    "GLITCH",
+    "RANDOM",
+];
+
+const DEATH_BLURBS: [&str; 11] = [
+    "bursts into spinning shards",
+    "blows up in a fireball",
+    "turns to dust and blows away",
+    "a ghost floats up to the sky",
+    "vaporized by a lightning bolt",
+    "spins off into the distance",
+    "pops like a balloon",
+    "freezes solid, then cracks",
+    "sucked into a black hole",
+    "RGB glitch and static",
+    "a surprise every time",
+];
+
+#[allow(clippy::too_many_arguments)]
+fn put(w: &mut World, x: f32, y: f32, vx: f32, vy: f32, life: f32, size: f32, col: Color, shape: Shape, grav: f32, spin: f32) {
+    if w.parts.len() > 2000 {
+        return;
+    }
+    let mut q = Particle::new(x, y, vx, vy, life, size, col, shape);
+    q.grav = grav;
+    q.spin = spin;
+    w.parts.push(q);
+}
+
+fn play_death(choice: usize, x: f32, y: f32, col: Color, w: &mut World) {
+    let idx = if choice >= 10 { (w.rng.next() * 10.0) as usize % 10 } else { choice };
+    w.ring(x, y, 220.0, Color::WHITE);
+    w.fx.flash = w.fx.flash.max(0.3);
+    w.shake(16.0);
+    match idx {
+        0 => {
+            // SHATTER
+            w.burst(x, y, 36, col, 600.0, 1.1, 14.0, Shape::Square, 500.0);
+            w.burst(x, y, 20, Color::WHITE, 700.0, 0.6, 7.0, Shape::Star, 0.0);
+            w.burst(x, y, 20, Color::WHITE, 800.0, 0.5, 3.0, Shape::Streak, 0.0);
+            w.ring(x, y, 170.0, col);
+        }
+        1 => {
+            // EXPLODE
+            w.ring(x, y, 290.0, Color::new(255, 150, 40, 255));
+            w.ring(x, y, 170.0, Color::new(255, 255, 200, 255));
+            w.burst(x, y, 44, Color::new(255, 170, 40, 255), 650.0, 0.7, 10.0, Shape::Circle, 0.0);
+            w.burst(x, y, 16, Color::new(255, 240, 160, 255), 500.0, 0.5, 6.0, Shape::Star, 0.0);
+            w.burst(x, y, 18, col, 500.0, 0.9, 10.0, Shape::Square, 800.0);
+            for _ in 0..14 {
+                let (px, py) = (x + w.rng.range(-30.0, 30.0), y + w.rng.range(-30.0, 30.0));
+                let (vx, vy) = (w.rng.range(-60.0, 60.0), w.rng.range(-120.0, -30.0));
+                let size = w.rng.range(14.0, 24.0);
+                let mut q = Particle::new(px, py, vx, vy, 1.2, size, Color::new(60, 55, 55, 170), Shape::Circle);
+                q.grow = true;
+                w.parts.push(q);
+            }
+            w.shake(28.0);
+            w.fx.flash = w.fx.flash.max(0.6);
+        }
+        2 => {
+            // DISINTEGRATE: dust blown off to the right
+            for _ in 0..80 {
+                let (px, py) = (x + w.rng.range(-30.0, 30.0), y + w.rng.range(-30.0, 30.0));
+                let (vx, vy) = (w.rng.range(40.0, 170.0), w.rng.range(-90.0, -10.0));
+                let (life, size, spin) = (w.rng.range(1.4, 2.4), w.rng.range(4.0, 9.0), w.rng.range(-200.0, 200.0));
+                put(w, px, py, vx, vy, life, size, with_alpha(col, 230), Shape::Square, -15.0, spin);
+            }
+        }
+        3 => {
+            // ASCEND: a pale ghost with a halo drifts upward
+            put(w, x, y, 0.0, -150.0, 1.6, SIZE, Color::new(235, 235, 255, 170), Shape::Ghost, 0.0, 0.0);
+            for k in 0..12 {
+                let a = k as f32 * 0.5236;
+                put(w, x + a.cos() * 34.0, y - 48.0 + a.sin() * 10.0, 0.0, -150.0, 1.6, 6.0, Color::new(255, 240, 160, 255), Shape::Star, 0.0, 0.0);
+            }
+            w.burst(x, y, 20, Color::new(255, 240, 160, 255), 160.0, 1.4, 6.0, Shape::Star, -120.0);
+        }
+        4 => {
+            // LIGHTNING: a bolt from the sky, ash and sparks
+            let mut pts = Vec::new();
+            let mut yy = 0.0;
+            let mut xx = x;
+            while yy < y {
+                pts.push(Vector2::new(xx, yy));
+                yy += w.rng.range(30.0, 60.0);
+                xx = x + w.rng.range(-28.0, 28.0);
+            }
+            pts.push(Vector2::new(x, y));
+            w.strikes.push(Strike { x, t: 0.0, owner: 0, struck: true, vis: 0.4, pts });
+            put(w, x, y, 0.0, 0.0, 0.25, SIZE, Color::WHITE, Shape::Ghost, 0.0, 0.0);
+            w.burst(x, y, 40, Color::new(50, 50, 50, 255), 400.0, 1.2, 7.0, Shape::Square, 600.0);
+            w.burst(x, y, 24, Color::new(255, 245, 150, 255), 600.0, 0.5, 5.0, Shape::Star, 300.0);
+            w.fx.flash = 1.0;
+            w.shake(30.0);
+        }
+        5 => {
+            // SPIN OFF: spins away diagonally into the distance
+            put(w, x, y, 750.0, -650.0, 1.3, SIZE, col, Shape::Ghost, 200.0, 1100.0);
+            for _ in 0..14 {
+                let f = w.rng.range(0.3, 1.0);
+                put(w, x, y, 750.0 * f, -650.0 * f, 0.9, 6.0, Color::new(255, 240, 160, 255), Shape::Star, 200.0, 0.0);
+            }
+            w.ring(x, y, 130.0, col);
+        }
+        6 => {
+            // CONFETTI POP
+            for _ in 0..70 {
+                let a = w.rng.range(0.0, 6.2832);
+                let sp = w.rng.range(150.0, 600.0);
+                let (life, size, spin) = (w.rng.range(1.0, 1.8), w.rng.range(7.0, 13.0), w.rng.range(-400.0, 400.0));
+                let c = hsv(w.rng.next() * 360.0);
+                put(w, x, y, a.cos() * sp, a.sin() * sp - 200.0, life, size, c, Shape::Square, 500.0, spin);
+            }
+            w.burst(x, y, 14, Color::WHITE, 350.0, 0.4, 6.0, Shape::Star, 0.0);
+            w.ring(x, y, 150.0, Color::new(255, 150, 220, 255));
+        }
+        7 => {
+            // FREEZE & CRACK
+            let ice = Color::new(170, 230, 255, 210);
+            put(w, x, y, 0.0, 0.0, 0.7, SIZE, ice, Shape::Ghost, 0.0, 0.0);
+            w.burst(x, y, 10, Color::WHITE, 30.0, 0.6, 10.0, Shape::Star, 0.0);
+            w.burst(x, y, 40, Color::new(200, 240, 255, 255), 500.0, 1.0, 10.0, Shape::Square, 900.0);
+            w.ring(x, y, 190.0, ice);
+        }
+        8 => {
+            // BLACK HOLE: everything is pulled into the middle
+            for k in 0..48 {
+                let a = k as f32 * 0.1309;
+                let r = w.rng.range(150.0, 260.0);
+                let sp = r / 0.5;
+                let c = if k % 2 == 0 { Color::new(150, 60, 255, 255) } else { Color::new(30, 0, 50, 255) };
+                let size = w.rng.range(5.0, 10.0);
+                put(w, x + a.cos() * r, y + a.sin() * r, -a.cos() * sp, -a.sin() * sp, 0.5, size, c, Shape::Circle, 0.0, 0.0);
+            }
+            put(w, x, y, 0.0, 0.0, 0.7, 60.0, Color::new(10, 0, 20, 255), Shape::Circle, 0.0, 0.0);
+            w.ring(x, y, 280.0, Color::new(150, 60, 255, 255));
+        }
+        _ => {
+            // GLITCH: RGB split, static and scan streaks
+            for (dx, c, vx) in [
+                (-14.0, Color::new(255, 40, 40, 170), -260.0),
+                (0.0, Color::new(40, 255, 60, 150), 0.0),
+                (14.0, Color::new(60, 80, 255, 170), 260.0),
+            ] {
+                put(w, x + dx, y, vx, 0.0, 0.55, SIZE, c, Shape::Ghost, 0.0, 0.0);
+            }
+            for k in 0..16 {
+                let dir = if k % 2 == 0 { 1.0 } else { -1.0 };
+                let (px, py, sp) = (x + w.rng.range(-80.0, 80.0), y + w.rng.range(-50.0, 50.0), w.rng.range(500.0, 1100.0));
+                let c = if k % 3 == 0 { Color::new(0, 255, 255, 255) } else { Color::new(255, 0, 200, 255) };
+                put(w, px, py, dir * sp, 0.0, 0.3, 3.0, c, Shape::Streak, 0.0, 0.0);
+            }
+            for _ in 0..30 {
+                let (vx, vy, life) = (w.rng.range(-300.0, 300.0), w.rng.range(-300.0, 300.0), w.rng.range(0.3, 0.5));
+                let c = hsv((w.rng.next() * 3.0).floor() * 120.0);
+                put(w, x, y, vx, vy, life, 8.0, c, Shape::Square, 0.0, 0.0);
+            }
+        }
+    }
+}
+
+// =====================================================================
+// victory cutscenes: 10 + random (the winner picks how they celebrate)
+// =====================================================================
+
+const VICTORY_NAMES: [&str; 11] = [
+    "KNIFE STAB FINALE",
+    "VICTORY DANCE",
+    "FIREWORKS",
+    "LIGHTNING ASCENSION",
+    "PHOENIX RISE",
+    "DOMINATION STOMP",
+    "SPOTLIGHT BOW",
+    "BLINK STORM",
+    "GIANT SLASH",
+    "METEOR SHOWER",
+    "RANDOM",
+];
+
+const VICTORY_BLURBS: [&str; 11] = [
+    "knife into the ground, then ALL abilities fire",
+    "spins, hops and showers confetti",
+    "fireworks burst across the sky",
+    "rises into the storm as lightning crashes",
+    "flames and fiery wings",
+    "three earth-shaking stomps",
+    "spotlight, golden sparkles and a bow",
+    "teleports all over in a storm of slashes",
+    "a screen-wide knife slash cuts the world",
+    "meteors rain down around the champion",
+    "a surprise every time",
+];
+
+// how far the camera zooms in, and how long each cutscene lasts
+const VIC_ZOOM: [f32; 10] = [1.35, 1.4, 1.0, 1.4, 1.5, 1.5, 1.7, 1.0, 1.15, 1.0];
+const VIC_DUR: [f32; 10] = [4.8, 3.4, 3.6, 3.6, 3.4, 3.6, 3.4, 3.0, 3.2, 3.6];
+
+struct Vic {
+    idx: usize,
+    who: usize,
+    t: f32,
+    dur: f32,
+    cycle: i32,
+}
+
+fn at(prev: f32, now: f32, mark: f32) -> bool {
+    prev < mark && now >= mark
+}
+
+fn victory_start(choice: usize, who: usize, players: &mut [Player; 2], map: &Map, w: &mut World) -> Vic {
+    let idx = if choice >= 10 { (w.rng.next() * 10.0) as usize % 10 } else { choice };
+    let ground = H as f32 - FLOOR_H;
+    let p = &mut players[who];
+    p.x = map.spawns[who];
+    p.y = ground - SIZE;
+    p.vx = 0.0;
+    p.vy = 0.0;
+    p.rot = 0.0;
+    p.on_ground = true;
+    p.facing = if who == 0 { 1.0 } else { -1.0 };
+    p.invuln = true;
+    p.shield_t = 0.0;
+    p.frozen_t = 0.0;
+    p.stun_t = 0.0;
+    p.burn_t = 0.0;
+    p.hurt_t = 0.0;
+    p.dash_t = 0.0;
+    p.slam = false;
+    p.slam_arm = false;
+    p.melee_t = 0.0;
+    p.block_held = false;
+    p.over_t = 0.0;
+    p.crouch = 0.0;
+    w.projs.clear();
+    w.strikes.clear();
+    w.meteors.clear();
+    w.lasers.clear();
+    w.pickups.clear();
+    w.grav_scale = 1.0;
+    w.fx.flash = 0.8;
+    let (cx, cy) = p.center();
+    w.ring(cx, cy, 260.0, Color::WHITE);
+    w.burst(cx, cy, 20, p.kind.color(), 400.0, 0.6, 7.0, Shape::Star, 0.0);
+    Vic { idx, who, t: 0.0, dur: VIC_DUR[idx], cycle: 0 }
+}
+
+// put the champion back on the ground when a cutscene ends
+fn victory_finish(who: usize, players: &mut [Player; 2], map: &Map) {
+    let p = &mut players[who];
+    p.x = map.spawns[who];
+    p.y = H as f32 - FLOOR_H - SIZE;
+    p.vx = 0.0;
+    p.vy = 0.0;
+    p.rot = 0.0;
+    p.on_ground = true;
+}
+
+// advance one frame of a cutscene; returns true when it is finished
+fn victory_update(v: &mut Vic, players: &mut [Player; 2], map: &Map, w: &mut World, dt: f32) -> bool {
+    let prev = v.t;
+    v.t += dt;
+    let t = v.t;
+    let ground = H as f32 - FLOOR_H;
+    let floor_y = ground - SIZE;
+    let who = v.who;
+    {
+        let (a, b) = players.split_at_mut(1);
+        let (win, lose) = if who == 0 { (&mut a[0], &mut b[0]) } else { (&mut b[0], &mut a[0]) };
+        let (cx, cy) = win.center();
+        let gold = Color::new(255, 220, 90, 255);
+        let orange = Color::new(255, 150, 40, 255);
+        match v.idx {
+            0 => {
+                // KNIFE STAB FINALE
+                step(win, &map.solids, dt, 1.0);
+                let kx = cx + 130.0;
+                if at(prev, t, 0.9) {
+                    w.ring(kx, ground, 320.0, Color::WHITE);
+                    w.ring(kx, ground, 210.0, orange);
+                    w.burst(kx, ground, 32, Color::new(110, 90, 70, 255), 650.0, 0.9, 12.0, Shape::Square, 900.0);
+                    w.burst(kx, ground, 20, Color::WHITE, 600.0, 0.6, 7.0, Shape::Star, 0.0);
+                    w.shake(32.0);
+                    w.fx.flash = 0.7;
+                    w.fx.punch = 0.08;
+                }
+                if at(prev, t, 1.8) {
+                    // every ability at once
+                    let (sx, sy) = (win.x, win.y);
+                    for (k, ab) in ABILITIES.iter().enumerate() {
+                        use_ability(*ab, win, lose, who, &map.solids, w);
+                        w.ring(cx, cy, 80.0 + k as f32 * 30.0, hsv(k as f32 * 30.0));
+                    }
+                    win.x = sx;
+                    win.y = sy;
+                    win.vx = 0.0;
+                    win.vy = 0.0;
+                    win.dash_t = 0.0;
+                    win.slam = false;
+                    win.slam_arm = false;
+                    win.shield_t = 0.0;
+                    win.regen_t = 0.0;
+                    w.banner = Some(("ALL ABILITIES!".to_string(), gold, 1.8));
+                    w.shake(36.0);
+                    w.fx.flash = 1.0;
+                    w.burst(cx, cy, 60, Color::WHITE, 900.0, 1.0, 8.0, Shape::Star, 0.0);
+                }
+                if t > 1.8 && w.rng.next() < 0.5 {
+                    let (px, py) = (cx + w.rng.range(-120.0, 120.0), cy + w.rng.range(-100.0, 60.0));
+                    put(w, px, py, 0.0, -80.0, 0.7, 6.0, hsv(t * 200.0), Shape::Star, 0.0, 0.0);
+                }
+            }
+            1 => {
+                // VICTORY DANCE
+                win.rot += 540.0 * dt;
+                if win.on_ground && (t * 2.0) as i32 != (prev * 2.0) as i32 {
+                    win.vy = -(2.0 * GRAVITY * JUMP * 0.5).sqrt();
+                    win.on_ground = false;
+                    w.burst(cx, cy + 30.0, 8, gold, 250.0, 0.5, 6.0, Shape::Star, 0.0);
+                }
+                for _ in 0..3 {
+                    let (px, vx, vy) = (w.rng.range(0.0, W as f32), w.rng.range(-40.0, 40.0), w.rng.range(150.0, 300.0));
+                    let (size, spin) = (w.rng.range(8.0, 14.0), w.rng.range(-300.0, 300.0));
+                    let c = hsv(w.rng.next() * 360.0);
+                    put(w, px, -10.0, vx, vy, 2.4, size, c, Shape::Square, 150.0, spin);
+                }
+                step(win, &map.solids, dt, 1.0);
+            }
+            2 => {
+                // FIREWORKS
+                if at(prev, t, 0.3) {
+                    win.vy = -(2.0 * GRAVITY * JUMP * 0.7).sqrt();
+                    win.on_ground = false;
+                }
+                if (t * 4.0) as i32 != (prev * 4.0) as i32 {
+                    let (fx, fy) = (w.rng.range(150.0, W as f32 - 150.0), w.rng.range(70.0, 320.0));
+                    let c = hsv(w.rng.next() * 360.0);
+                    w.ring(fx, fy, 120.0, c);
+                    w.burst(fx, fy, 45, c, 420.0, 1.1, 6.0, Shape::Star, 150.0);
+                    w.burst(fx, fy, 20, Color::WHITE, 300.0, 0.8, 3.0, Shape::Streak, 100.0);
+                    w.shake(6.0);
+                }
+                step(win, &map.solids, dt, 1.0);
+            }
+            3 => {
+                // LIGHTNING ASCENSION
+                win.vy = 0.0;
+                win.on_ground = false;
+                win.rot += 90.0 * dt;
+                if win.y > 120.0 {
+                    win.y -= 110.0 * dt;
+                }
+                if (t * 2.5) as i32 != (prev * 2.5) as i32 {
+                    let mut sx = w.rng.range(80.0, W as f32 - 80.0);
+                    if (sx - cx).abs() < 110.0 {
+                        sx += if sx >= cx { 160.0 } else { -160.0 };
+                    }
+                    let sx = sx.clamp(40.0, W as f32 - 40.0);
+                    w.strikes.push(Strike { x: sx, t: 0.45, owner: who, struck: false, vis: 0.0, pts: Vec::new() });
+                }
+                let (px, py) = (cx + w.rng.range(-40.0, 40.0), cy + w.rng.range(0.0, 60.0));
+                put(w, px, py, 0.0, 60.0, 0.6, 5.0, gold, Shape::Star, 0.0, 0.0);
+                if at(prev, t, v.dur - 0.5) {
+                    w.fx.flash = 1.0;
+                    w.ring(cx, cy, 420.0, Color::WHITE);
+                    w.shake(30.0);
+                }
+            }
+            4 => {
+                // PHOENIX RISE
+                win.y = floor_y - 90.0 * ease(t / 0.9);
+                win.vy = 0.0;
+                win.on_ground = false;
+                for _ in 0..4 {
+                    let (px, py) = (cx + w.rng.range(-50.0, 50.0), cy + w.rng.range(-20.0, 40.0));
+                    let (vy, size) = (-w.rng.range(80.0, 220.0), w.rng.range(6.0, 12.0));
+                    let c = Color::new(255, 110 + (w.rng.next() * 120.0) as u8, 30, 230);
+                    put(w, px, py, 0.0, vy, 0.8, size, c, Shape::Circle, -100.0, 0.0);
+                }
+                if at(prev, t, 0.9) {
+                    w.ring(cx, ground, 340.0, orange);
+                    for k in 0..11 {
+                        let fx = (cx + (k as f32 - 5.0) * 70.0).clamp(20.0, W as f32 - 20.0);
+                        w.burst(fx, ground, 6, orange, 260.0, 0.9, 10.0, Shape::Circle, -420.0);
+                    }
+                    w.shake(20.0);
+                    w.fx.flash = 0.5;
+                }
+            }
+            5 => {
+                // DOMINATION STOMP: three huge stomps
+                let tt = (t - 0.2).max(0.0);
+                let cyc = ((tt / 0.8) as i32).min(3);
+                if t >= 0.2 && cyc < 3 {
+                    let phase = (tt % 0.8) / 0.8;
+                    win.y = floor_y - 170.0 * (std::f32::consts::PI * phase).sin().max(0.0).powf(0.7);
+                    win.on_ground = false;
+                } else {
+                    win.y = floor_y;
+                    win.on_ground = true;
+                }
+                win.vy = 0.0;
+                if cyc != v.cycle {
+                    v.cycle = cyc;
+                    if cyc >= 1 {
+                        let k = cyc as f32;
+                        w.ring(cx, ground, 200.0 + 70.0 * k, orange);
+                        w.ring(cx, ground, 130.0, Color::WHITE);
+                        w.burst(cx, ground, 14 + cyc as usize * 4, Color::new(120, 95, 70, 255), 500.0, 0.8, 11.0, Shape::Square, 900.0);
+                        for j in 0..14 {
+                            let dir = if j % 2 == 0 { 1.0 } else { -1.0 };
+                            let sp = w.rng.range(250.0, 900.0);
+                            put(w, cx, ground - 4.0, dir * sp, 0.0, 0.4, 3.0, Color::WHITE, Shape::Streak, 0.0, 0.0);
+                        }
+                        w.shake(14.0 + 7.0 * k);
+                        w.fx.flash = 0.3;
+                        w.fx.punch = 0.07;
+                    }
+                }
+            }
+            6 => {
+                // SPOTLIGHT BOW
+                if at(prev, t, 0.3) {
+                    win.vy = -(2.0 * GRAVITY * JUMP * 0.45).sqrt();
+                    win.on_ground = false;
+                }
+                win.rot = if t > 1.0 && t < 1.9 { 28.0 * (std::f32::consts::PI * (t - 1.0) / 0.9).sin() * win.facing } else { 0.0 };
+                if w.rng.next() < 0.6 {
+                    let (px, vx, vy) = (cx + w.rng.range(-110.0, 110.0), w.rng.range(-20.0, 20.0), w.rng.range(120.0, 220.0));
+                    put(w, px, cy - 260.0, vx, vy, 1.6, 7.0, gold, Shape::Star, 0.0, 0.0);
+                }
+                step(win, &map.solids, dt, 1.0);
+            }
+            7 => {
+                // BLINK STORM
+                let n = (t / 0.3) as i32;
+                let pn = (prev / 0.3) as i32;
+                if n != pn && (1..=8).contains(&n) {
+                    let violet = Color::new(190, 120, 255, 255);
+                    put(w, cx, cy, 0.0, 0.0, 0.5, SIZE, with_alpha(violet, 160), Shape::Ghost, 0.0, 0.0);
+                    w.ring(cx, cy, 90.0, violet);
+                    if n == 8 {
+                        win.x = map.spawns[who];
+                        win.y = floor_y;
+                    } else {
+                        for _ in 0..10 {
+                            let si = (w.rng.next() * map.solids.len() as f32) as usize % map.solids.len();
+                            let r = map.solids[si].r;
+                            if r.width >= SIZE + 20.0 && r.y - SIZE >= 0.0 {
+                                win.x = r.x + w.rng.range(10.0, r.width - SIZE - 10.0);
+                                win.y = r.y - SIZE;
+                                break;
+                            }
+                        }
+                    }
+                    win.vx = 0.0;
+                    win.vy = 0.0;
+                    win.facing = if n % 2 == 0 { 1.0 } else { -1.0 };
+                    let (nx, ny) = win.center();
+                    w.ring(nx, ny, 100.0, Color::WHITE);
+                    w.ring(nx, ny, 150.0, violet);
+                    w.burst(nx, ny, 12, Color::WHITE, 380.0, 0.4, 5.0, Shape::Star, 0.0);
+                    w.burst(nx, ny, 8, Color::new(220, 240, 255, 255), 700.0, 0.25, 3.0, Shape::Streak, 0.0);
+                    w.shake(8.0);
+                }
+                step(win, &map.solids, dt, 1.0);
+            }
+            8 => {
+                // GIANT SLASH
+                step(win, &map.solids, dt, 1.0);
+                if at(prev, t, 0.6) {
+                    w.shake(10.0);
+                }
+                if at(prev, t, 0.95) {
+                    w.fx.flash = 1.0;
+                    w.shake(38.0);
+                    w.fx.punch = 0.08;
+                    for k in 0..40 {
+                        let f = k as f32 / 39.0;
+                        let (px, py) = (f * W as f32, 40.0 + f * (H as f32 - 80.0));
+                        let (vx, vy) = (w.rng.range(-80.0, 80.0), w.rng.range(-200.0, -40.0));
+                        put(w, px, py, vx, vy, 0.8, 6.0, Color::new(180, 240, 255, 255), Shape::Star, 300.0, 0.0);
+                    }
+                }
+            }
+            _ => {
+                // METEOR SHOWER
+                step(win, &map.solids, dt, 1.0);
+                if t > 0.3 && t < 2.6 && (t / 0.17) as i32 != (prev / 0.17) as i32 {
+                    let tx = w.rng.range(40.0, W as f32 - 40.0);
+                    w.meteors.push(Meteor { tx, warn: 0.03, x: 0.0, y: 0.0, vx: 0.0, vy: 0.0, falling: false });
+                }
+                if at(prev, t, v.dur - 0.4) {
+                    w.ring(cx, cy, 420.0, orange);
+                    w.ring(cx, cy, 280.0, Color::WHITE);
+                    w.fx.flash = 0.9;
+                    w.shake(30.0);
+                }
+            }
+        }
+    }
+    update_particles(&mut w.parts, dt);
+    update_booms(&mut w.booms, dt);
+    update_strikes(players, w, dt);
+    update_projs(players, &map.solids, w, dt);
+    update_meteors(players, &map.solids, w, dt);
+    v.t >= v.dur
+}
+
+// extra world-space visuals for each cutscene (drawn over the players)
+fn victory_draw(d: &mut impl RaylibDraw, v: &Vic, win: &Player, now: f32) {
+    let ground = H as f32 - FLOOR_H;
+    let (cx, cy) = win.center();
+    let t = v.t;
+    let vv = |x: f32, y: f32| Vector2::new(x, y);
+    match v.idx {
+        0 => {
+            // giant knife falls and sticks in the ground next to the champion
+            let scale = 2.4;
+            let len = 92.0 * scale;
+            let kx = cx + 130.0;
+            let y0 = -len - 40.0;
+            let y1 = ground + 22.0 - len;
+            let hy = if t < 0.9 { y0 + (y1 - y0) * ease(t / 0.9) } else { y1 };
+            if t < 0.9 {
+                for k in 0..4 {
+                    let lx = kx - 20.0 + k as f32 * 13.0;
+                    d.draw_line_ex(vv(lx, hy - 140.0), vv(lx, hy), 3.0, Color::new(255, 255, 255, 120));
+                }
+            }
+            draw_knife(d, kx, hy, 180.0, 1.0, scale);
+            if t >= 0.9 {
+                let a = (1.0 - (t - 0.9) / 1.2).clamp(0.0, 1.0);
+                d.draw_circle_lines(kx as i32, ground as i32, 30.0 + 160.0 * (1.0 - a), Color::new(255, 255, 255, (200.0 * a) as u8));
+            }
+        }
+        3 => {
+            // light beam and halo
+            d.draw_rectangle((cx - 45.0) as i32, 0, 90, cy as i32, Color::new(255, 255, 220, 40));
+            for (k, r) in [50.0, 70.0, 90.0].iter().enumerate() {
+                let pulse = (now * 6.0 + k as f32).sin() * 5.0;
+                d.draw_circle_lines(cx as i32, cy as i32, r + pulse, Color::new(255, 230, 120, 200));
+            }
+        }
+        4 => {
+            // wings of flame
+            let flap = (now * 8.0).sin();
+            for side in [-1.0_f32, 1.0] {
+                for (len, ang, col) in [
+                    (170.0, -40.0 + 20.0 * flap, Color::new(255, 110, 30, 200)),
+                    (135.0, -10.0 + 15.0 * flap, Color::new(255, 170, 40, 200)),
+                    (100.0, 22.0 + 10.0 * flap, Color::new(255, 225, 100, 200)),
+                ] {
+                    let a = (ang as f32).to_radians();
+                    let base = vv(cx + side * 16.0, cy);
+                    let tip = vv(cx + side * (20.0 + len * a.cos()), cy + len * a.sin());
+                    let low = vv(cx + side * 16.0, cy + 34.0);
+                    tri(d, base, tip, low, col);
+                }
+            }
+        }
+        6 => {
+            // dark room with a spotlight on the champion
+            let a = (t / 0.4).min(1.0);
+            d.draw_ring(vv(cx, cy), 120.0, 1800.0, 0.0, 360.0, 64, Color::new(0, 0, 0, (205.0 * a) as u8));
+            let beam = Color::new(255, 240, 160, (34.0 * a) as u8);
+            tri(d, vv(cx - 30.0, -20.0), vv(cx - 150.0, ground), vv(cx, ground), beam);
+            tri(d, vv(cx + 30.0, -20.0), vv(cx, ground), vv(cx + 150.0, ground), beam);
+            tri(d, vv(cx - 30.0, -20.0), vv(cx + 30.0, -20.0), vv(cx, ground), beam);
+        }
+        8 => {
+            // the giant knife sweeps, then a bright cut line hangs across the screen
+            if t >= 0.3 && t < 1.1 {
+                let f = ease((t - 0.3) / 0.65);
+                draw_knife(d, cx - 60.0, cy - 40.0, -80.0 + 180.0 * f, 1.0, 7.0);
+            }
+            if t >= 0.95 {
+                let a = (1.0 - (t - 0.95) / 1.4).clamp(0.0, 1.0);
+                let th = 50.0 * a + 4.0;
+                d.draw_line_ex(vv(0.0, 40.0), vv(W as f32, H as f32 - 40.0), th * 1.8, Color::new(120, 230, 255, (120.0 * a) as u8));
+                d.draw_line_ex(vv(0.0, 40.0), vv(W as f32, H as f32 - 40.0), th, Color::new(255, 255, 255, (255.0 * a) as u8));
+            }
+        }
+        _ => {}
+    }
+}
+
 fn camera_for(zoom: f32, focus: (f32, f32), weight: f32, shake: (f32, f32)) -> Camera2D {
     let zoom = zoom.max(1.0);
     let tx = W as f32 / 2.0 + (focus.0 - W as f32 / 2.0) * weight;
@@ -2534,8 +3591,8 @@ fn camera_for(zoom: f32, focus: (f32, f32), weight: f32, shake: (f32, f32)) -> C
 // main
 // =====================================================================
 
-const ROWS: usize = 5;
-const ROW_NAMES: [&str; ROWS] = ["CHARACTER", "ABILITY 1", "ABILITY 2", "TRAIL", "TRAIL COLOR"];
+const ROWS: usize = 7;
+const ROW_NAMES: [&str; ROWS] = ["CHARACTER", "ABILITY 1", "ABILITY 2", "TRAIL", "TRAIL COLOR", "DEATH ANIM", "VICTORY"];
 
 fn respawn(p: &mut Player, setup: &Setup, x: f32, facing: f32, keys: Keys, w: &mut World) {
     let ult = p.ult;
@@ -2608,6 +3665,9 @@ fn main() {
     // ---- cinematic state ----
     let mut ko_timer = 0.0f32;
     let mut ko_focus = (W as f32 / 2.0, H as f32 / 2.0);
+    let mut vic: Option<Vic> = None; // the winner's victory cutscene, while it plays
+    let mut pending_vic: Option<usize> = None; // winner waiting for the KO to finish
+    let mut vic_done = false;
 
     while !rl.window_should_close() {
         let dt = rl.get_frame_time().min(0.05);
@@ -2633,6 +3693,7 @@ fn main() {
 
         if selecting {
             // ---- loadout menus ----
+            let mut preview_death: Option<(usize, usize)> = None;
             for i in 0..2 {
                 let k = keys[i];
                 if !ready[i] {
@@ -2653,13 +3714,23 @@ fn main() {
                             1 => s.abil[0] = cycle(s.abil[0], ABILITIES.len(), dir),
                             2 => s.abil[1] = cycle(s.abil[1], ABILITIES.len(), dir),
                             3 => s.trail = cycle(s.trail, TRAIL_STYLES.len(), dir),
-                            _ => s.color = cycle(s.color, TRAIL_COLOR_NAMES.len(), dir),
+                            4 => s.color = cycle(s.color, TRAIL_COLOR_NAMES.len(), dir),
+                            5 => {
+                                s.death = cycle(s.death, DEATH_NAMES.len(), dir);
+                                preview_death = Some((i, s.death)); // demo it on the preview square
+                            }
+                            _ => s.victory = cycle(s.victory, VICTORY_NAMES.len(), dir),
                         }
                     }
                 }
                 if rl.is_key_pressed(ready_keys[i]) {
                     ready[i] = !ready[i];
                 }
+            }
+            if let Some((i, choice)) = preview_death {
+                let (px, py) = previews[i].center();
+                let col = previews[i].kind.color();
+                play_death(choice, px, py, col, &mut w);
             }
             let both_ready = ready[0] && (ready[1] || cpu);
             if !both_ready {
@@ -2705,6 +3776,8 @@ fn main() {
                 wins = [0, 0];
                 series_over = false;
                 ko_timer = 0.0;
+                vic = None;
+                pending_vic = None;
                 rd = Round::new();
                 selecting = false;
             }
@@ -2721,7 +3794,35 @@ fn main() {
                 dt_sim = 0.0;
             }
 
-            if result.is_none() || ko_active {
+            if vic_done {
+                vic = None;
+                vic_done = false;
+            }
+
+            // the KO is over: the loser goes out in style, then the winner's cutscene starts
+            if let Some(wi) = pending_vic {
+                if ko_timer <= 0.0 && w.fx.hitstop <= 0.0 && vic.is_none() {
+                    let li = 1 - wi;
+                    if players[li].dead_t < 50.0 {
+                        let (px, py) = players[li].center();
+                        let col = players[li].kind.color();
+                        play_death(setups[li].death, px, py, col, &mut w);
+                        players[li].dead_t = 99.0;
+                    }
+                    vic = Some(victory_start(setups[wi].victory, wi, &mut players, &map, &mut w));
+                    pending_vic = None;
+                }
+            }
+
+            if let Some(v) = vic.as_mut() {
+                // ---- victory cutscene (press SPACE / ENTER to skip) ----
+                let skip = rl.is_key_pressed(KeyboardKey::KEY_SPACE) || rl.is_key_pressed(KeyboardKey::KEY_ENTER);
+                let finished = victory_update(v, &mut players, &map, &mut w, dt);
+                if finished || skip {
+                    victory_finish(v.who, &mut players, &map);
+                    vic_done = true;
+                }
+            } else if result.is_none() || ko_active {
                 if dt_sim > 0.0 {
                     let hp_before = [players[0].hp, players[1].hp];
                     let live = result.is_none();
@@ -2874,11 +3975,7 @@ fn main() {
                                 players[i].dead_t = RESPAWN_TIME;
                                 let (px, py) = players[i].center();
                                 let col = players[i].kind.color();
-                                w.burst(px, py, 30, col, 550.0, 0.9, 12.0, Shape::Square, 500.0);
-                                w.burst(px, py, 14, Color::WHITE, 600.0, 0.5, 6.0, Shape::Star, 0.0);
-                                w.ring(px, py, 220.0, Color::WHITE);
-                                w.shake(16.0);
-                                w.fx.flash = w.fx.flash.max(0.3);
+                                play_death(setups[i].death, px, py, col, &mut w);
                                 if mode == Mode::Stock {
                                     rd.stocks[i] -= 1;
                                 } else {
@@ -2966,9 +4063,10 @@ fn main() {
                             w.fx.flash = 0.9;
                             w.shake(26.0);
                             w.fx.hitstop = 0.18;
+                            pending_vic = win; // the winner gets a victory cutscene (not on a draw)
                             if ko {
                                 ko_timer = KO_TIME;
-                                // the loser(s) burst apart
+                                // the loser(s) go out with their chosen death animation
                                 let mut fx = 0.0;
                                 let mut fy = 0.0;
                                 let mut n = 0.0;
@@ -2977,11 +4075,11 @@ fn main() {
                                         players[i].hp = 0.0;
                                         let (px, py) = players[i].center();
                                         let col = players[i].kind.color();
-                                        w.burst(px, py, 36, col, 600.0, 1.1, 14.0, Shape::Square, 500.0);
-                                        w.burst(px, py, 20, Color::WHITE, 700.0, 0.6, 7.0, Shape::Star, 0.0);
-                                        w.burst(px, py, 20, Color::WHITE, 800.0, 0.5, 3.0, Shape::Streak, 0.0);
-                                        w.ring(px, py, 260.0, Color::WHITE);
-                                        w.ring(px, py, 170.0, col);
+                                        if players[i].dead_t <= 0.0 {
+                                            // (stock mode already played it when the last life went)
+                                            play_death(setups[i].death, px, py, col, &mut w);
+                                        }
+                                        players[i].dead_t = 99.0;
                                         fx += px;
                                         fy += py;
                                         n += 1.0;
@@ -2999,13 +4097,15 @@ fn main() {
                 update_booms(&mut w.booms, dt);
                 update_particles(&mut w.parts, dt);
                 update_strikes(&mut players, &mut w, dt);
-                if rl.is_key_pressed(KeyboardKey::KEY_R) {
+                if pending_vic.is_none() && rl.is_key_pressed(KeyboardKey::KEY_R) {
                     selecting = true;
                     ready = [false, false];
                     w.clear();
+                    vic = None;
                     theme_idx = start_theme; // back to the map you picked
                     map = make_map(THEMES[theme_idx]);
-                } else if !series_over
+                } else if pending_vic.is_none()
+                    && !series_over
                     && (rl.is_key_pressed(KeyboardKey::KEY_SPACE) || rl.is_key_pressed(KeyboardKey::KEY_ENTER))
                 {
                     // next round: next theme in the rotation, fresh squares
@@ -3058,30 +4158,43 @@ fn main() {
                     ABILITIES[s.abil[1]].name(),
                     TRAIL_STYLES[s.trail].name(),
                     TRAIL_COLOR_NAMES[s.color],
+                    DEATH_NAMES[s.death],
+                    VICTORY_NAMES[s.victory],
                 ];
                 for r in 0..ROWS {
-                    let ry = py + 48 + r as i32 * 44;
+                    let ry = py + 44 + r as i32 * 36;
                     let active = row[i] == r && !ready[i];
                     if active {
-                        d.draw_rectangle(px + 8, ry - 4, 584, 38, Color::new(255, 255, 255, 60));
+                        d.draw_rectangle(px + 8, ry - 3, 584, 32, Color::new(255, 255, 255, 60));
                     }
-                    text(&mut d, ROW_NAMES[r], px + 20, ry, 24, Color::WHITE);
+                    text(&mut d, ROW_NAMES[r], px + 20, ry, 22, Color::WHITE);
                     let val = if active { format!("<  {}  >", values[r]) } else { values[r].to_string() };
-                    text(&mut d, &val, px + 190, ry, 26, if active { Color::YELLOW } else { Color::LIGHTGRAY });
+                    text(&mut d, &val, px + 190, ry, 24, if active { Color::YELLOW } else { Color::LIGHTGRAY });
                 }
 
                 let kind = KINDS[s.kind];
                 let ks = if i == 0 { ("F", "G") } else { ("COMMA", "PERIOD") };
                 let a1 = ABILITIES[s.abil[0]];
                 let a2 = ABILITIES[s.abil[1]];
-                let by = py + 276;
+                let by = py + 304;
                 text(&mut d, &format!("{}: {} - {}", ks.0, a1.name(), a1.blurb()), px + 20, by, 20, Color::WHITE);
-                text(&mut d, &format!("{}: {} - {}", ks.1, a2.name(), a2.blurb()), px + 20, by + 26, 20, Color::WHITE);
+                text(&mut d, &format!("{}: {} - {}", ks.1, a2.name(), a2.blurb()), px + 20, by + 24, 20, Color::WHITE);
                 let (knife, block, ult) = if i == 0 { ("E", "Q", "V") } else { ("SLASH", "R-SHIFT", "R-CTRL") };
-                text(&mut d, &format!("{}: KNIFE   {}: BLOCK (tap = parry)", knife, block), px + 20, by + 52, 20, Color::WHITE);
-                text(&mut d, &format!("{}: ULT {} - {}", ult, kind.ult_name(), kind.ult_blurb()), px + 20, by + 78, 20, Color::new(255, 220, 90, 255));
-                text(&mut d, kind.passive(), px + 20, by + 104, 20, Color::new(150, 255, 170, 255));
-                text(&mut d, &format!("also: W/UP jump, again = double jump, jump on walls"), px + 20, by + 130, 18, Color::LIGHTGRAY);
+                text(&mut d, &format!("{}: KNIFE   {}: BLOCK (tap = parry)", knife, block), px + 20, by + 48, 20, Color::WHITE);
+                text(&mut d, &format!("{}: ULT {} - {}", ult, kind.ult_name(), kind.ult_blurb()), px + 20, by + 72, 20, Color::new(255, 220, 90, 255));
+                text(&mut d, kind.passive(), px + 20, by + 96, 20, Color::new(150, 255, 170, 255));
+                // describe whichever animation row you're on
+                let (tag, blurb) = match row[i] {
+                    5 => ("DEATH", DEATH_BLURBS[s.death]),
+                    6 => ("VICTORY", VICTORY_BLURBS[s.victory]),
+                    _ => ("", ""),
+                };
+                let note = if blurb.is_empty() {
+                    format!("DEATH: {}   VICTORY: {}", DEATH_NAMES[s.death], VICTORY_NAMES[s.victory])
+                } else {
+                    format!("{}: {}", tag, blurb)
+                };
+                text(&mut d, &note, px + 20, by + 120, 20, Color::new(255, 170, 230, 255));
             }
             draw_particles(&mut d, &w.parts);
             for i in 0..2 {
@@ -3106,9 +4219,18 @@ fn main() {
         } else {
             // ---- the cinematic camera: shake, zoom punch, KO zoom ----
             let ko_prog = if ko_timer > 0.0 { ease(1.0 - ko_timer / KO_TIME) } else { 0.0 };
-            let zoom = 1.0 + w.fx.punch + 0.45 * ko_prog;
+            let mut zoom = 1.0 + w.fx.punch + 0.45 * ko_prog;
+            let mut focus = ko_focus;
+            let mut weight = ko_prog;
+            if let Some(v) = vic.as_ref() {
+                // victory cutscene: push in on the champion
+                let wp = ease(v.t / 0.5);
+                zoom = 1.0 + (VIC_ZOOM[v.idx] - 1.0) * wp + w.fx.punch;
+                focus = players[v.who].center();
+                weight = wp;
+            }
             let shake = (w.rng.range(-1.0, 1.0) * w.fx.shake, w.rng.range(-1.0, 1.0) * w.fx.shake);
-            let cam = camera_for(zoom, ko_focus, ko_prog, shake);
+            let cam = camera_for(zoom, focus, weight, shake);
             let rise = if theme == Theme::Volcano { 90.0 * ease((rd.time * 0.5).sin().max(0.0)) } else { 0.0 };
             let hazard_now = map.hazard.map(|hz| Rectangle::new(hz.x, hz.y - rise, hz.width, hz.height + rise));
             let zone = if mode == Mode::Hill { Some(map.zones[rd.zone_idx]) } else { None };
@@ -3122,8 +4244,13 @@ fn main() {
                         draw_player(&mut m, p, t);
                     }
                 }
+                if let Some(v) = vic.as_ref() {
+                    victory_draw(&mut m, v, &players[v.who], t);
+                }
             }
 
+            // the HUD steps aside while a victory cutscene plays
+            if vic.is_none() {
             draw_hud(&mut d, &players, mode, &rd, t);
             // round counter and running tally, top center
             center_text(&mut d, &format!("ROUND {} / {}", round_no, round_options[rounds_idx]), 12, 24, Color::WHITE);
@@ -3142,11 +4269,23 @@ fn main() {
                 }
                 _ => {}
             }
+            let wind_name = match theme {
+                Theme::Frozen => "BLIZZARD",
+                Theme::Sea => "CURRENT",
+                _ => "WIND",
+            };
             if rd.wind_warn {
-                center_text(&mut d, "WIND INCOMING!", 150, 28, Color::WHITE);
+                center_text(&mut d, &format!("{} INCOMING!", wind_name), 150, 28, Color::WHITE);
             } else if rd.wind != 0.0 {
-                let arrow = if rd.wind > 0.0 { "WIND  >>>" } else { "<<<  WIND" };
-                center_text(&mut d, arrow, 150, 28, Color::WHITE);
+                let arrow = if rd.wind > 0.0 { format!("{}  >>>", wind_name) } else { format!("<<<  {}", wind_name) };
+                center_text(&mut d, &arrow, 150, 28, Color::WHITE);
+            }
+            if theme == Theme::Space {
+                if rd.zerog_warn {
+                    center_text(&mut d, "ZERO-G INCOMING!", 150, 28, Color::WHITE);
+                } else if rd.zerog {
+                    center_text(&mut d, "ZERO-G!", 150, 28, Color::new(160, 220, 255, 255));
+                }
             }
             if theme == Theme::Volcano && rise > 5.0 {
                 center_text(&mut d, "LAVA SURGE!", 176, 28, Color::new(255, 130, 40, 255));
@@ -3167,6 +4306,18 @@ fn main() {
                     let s = format!("P{} RESPAWN {:.1}", i + 1, players[i].dead_t);
                     text(&mut d, &s, x - text_width(&s, 28) / 2, H / 2, 28, Color::WHITE);
                 }
+            }
+            }
+
+            // ---- victory cutscene: letterbox bars and a title card ----
+            if let Some(v) = vic.as_ref() {
+                let bar = 90.0 * ease(v.t / 0.4);
+                d.draw_rectangle(0, 0, W, bar as i32, Color::BLACK);
+                d.draw_rectangle(0, H - bar as i32, W, bar as i32 + 1, Color::BLACK);
+                let who = v.who;
+                let title = format!("P{} {}  -  {}", who + 1, players[who].kind.name(), VICTORY_NAMES[v.idx]);
+                center_text(&mut d, &title, 28, 30, Color::YELLOW);
+                center_text(&mut d, "SPACE = skip", H - 60, 20, Color::LIGHTGRAY);
             }
 
             // ---- big ultimate / parry banner ----
@@ -3189,8 +4340,8 @@ fn main() {
                 text(&mut d, "K.O.!", W / 2 - text_width("K.O.!", size) / 2 + jx, H / 2 - size / 2, size, Color::YELLOW);
             }
 
-            // ---- round result banner (after the KO cinematic) ----
-            if ko_timer <= 0.0 {
+            // ---- round result banner (after the KO and victory cutscene) ----
+            if ko_timer <= 0.0 && vic.is_none() && pending_vic.is_none() {
                 if let Some(msg) = &result {
                     d.draw_rectangle(0, 190, W, 260, Color::new(0, 0, 0, 150));
                     center_text(&mut d, msg, 205, 50, Color::YELLOW);
