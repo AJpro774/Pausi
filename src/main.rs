@@ -1280,6 +1280,14 @@ fn main() {
     ];
     let mut result: Option<String> = None;
 
+    // ---- match (series) state ----
+    let round_options = [1u32, 3, 5, 10, 15];
+    let mut rounds_idx = 1usize; // default: 3 rounds
+    let mut start_theme = 0usize;
+    let mut round_no = 1u32;
+    let mut wins = [0u32; 2];
+    let mut series_over = false;
+
     while !rl.window_should_close() {
         let dt = rl.get_frame_time().min(0.05);
         let t = rl.get_time() as f32;
@@ -1318,6 +1326,9 @@ fn main() {
                 theme_idx = cycle(theme_idx, THEMES.len(), 1);
                 map = make_map(THEMES[theme_idx]);
             }
+            if rl.is_key_pressed(KeyboardKey::KEY_N) && !(ready[0] && ready[1]) {
+                rounds_idx = cycle(rounds_idx, round_options.len(), 1);
+            }
 
             // animated previews so you can see the trail you picked
             for i in 0..2 {
@@ -1343,6 +1354,10 @@ fn main() {
                 booms.clear();
                 parts.clear();
                 result = None;
+                start_theme = theme_idx;
+                round_no = 1;
+                wins = [0, 0];
+                series_over = false;
                 selecting = false;
             }
         } else {
@@ -1409,13 +1424,24 @@ fn main() {
                 }
                 update_particles(&mut parts, dt);
 
+                // ---- end of round: update the tally ----
                 let dead = [players[0].hp <= 0.0, players[1].hp <= 0.0];
-                result = match dead {
-                    [true, true] => Some("DRAW".to_string()),
-                    [true, false] => Some(format!("P2 ({}) WINS", players[1].kind.name())),
-                    [false, true] => Some(format!("P1 ({}) WINS", players[0].kind.name())),
+                let winner: Option<Option<usize>> = match dead {
+                    [true, true] => Some(None),
+                    [true, false] => Some(Some(1)),
+                    [false, true] => Some(Some(0)),
                     _ => None,
                 };
+                if let Some(w) = winner {
+                    if let Some(i) = w {
+                        wins[i] += 1;
+                    }
+                    series_over = round_no >= round_options[rounds_idx];
+                    result = Some(match w {
+                        Some(i) => format!("P{} ({}) WINS THE ROUND", i + 1, players[i].kind.name()),
+                        None => "ROUND DRAWN".to_string(),
+                    });
+                }
             } else {
                 for b in booms.iter_mut() {
                     b.t += dt;
@@ -1426,6 +1452,23 @@ fn main() {
                     selecting = true;
                     ready = [false, false];
                     parts.clear();
+                    theme_idx = start_theme; // back to the map you picked
+                    map = make_map(THEMES[theme_idx]);
+                } else if !series_over
+                    && (rl.is_key_pressed(KeyboardKey::KEY_SPACE) || rl.is_key_pressed(KeyboardKey::KEY_ENTER))
+                {
+                    // next round: next theme in the rotation, fresh squares
+                    round_no += 1;
+                    theme_idx = cycle(theme_idx, THEMES.len(), 1);
+                    map = make_map(THEMES[theme_idx]);
+                    players = [
+                        Player::new(&setups[0], map.spawns[0], 1.0, keys[0]),
+                        Player::new(&setups[1], map.spawns[1], -1.0, keys[1]),
+                    ];
+                    bombs.clear();
+                    booms.clear();
+                    parts.clear();
+                    result = None;
                 }
             }
         }
@@ -1441,7 +1484,7 @@ fn main() {
             center_text(&mut d, "PAUSI", 14, 60, Color::WHITE);
             center_text(
                 &mut d,
-                &format!("MAP: {}  ({})   - press M to change", theme.name(), theme.blurb()),
+                &format!("STARTING MAP: {}  ({})   - press M to change", theme.name(), theme.blurb()),
                 84,
                 24,
                 Color::YELLOW,
@@ -1488,9 +1531,16 @@ fn main() {
             for i in 0..2 {
                 draw_player(&mut d, &previews[i]);
             }
-            text(&mut d, "P1: W/S pick row  A/D change  F ready", 40, 590, 24, Color::YELLOW);
-            text(&mut d, "P2: Up/Down pick row  Left/Right change  L ready", 640, 590, 24, Color::YELLOW);
-            center_text(&mut d, "Both players ready = fight!", 630, 28, Color::WHITE);
+            text(&mut d, "P1: W/S pick row  A/D change  F ready", 40, 585, 24, Color::YELLOW);
+            text(&mut d, "P2: Up/Down pick row  Left/Right change  L ready", 640, 585, 24, Color::YELLOW);
+            center_text(
+                &mut d,
+                &format!("ROUNDS: {}   (press N to change - every round switches to the next map)", round_options[rounds_idx]),
+                622,
+                26,
+                Color::WHITE,
+            );
+            center_text(&mut d, "Both players ready = fight!", 658, 24, Color::LIME);
         } else {
             draw_world(&mut d, theme, &map, &bombs, &booms, t);
             draw_particles(&mut d, &parts);
@@ -1498,13 +1548,45 @@ fn main() {
                 draw_player(&mut d, p);
             }
             draw_hud(&mut d, &players);
+            // round counter and running tally, top center
+            center_text(
+                &mut d,
+                &format!("ROUND {} / {}", round_no, round_options[rounds_idx]),
+                12,
+                24,
+                Color::WHITE,
+            );
+            center_text(&mut d, &format!("{}  -  {}", wins[0], wins[1]), 42, 44, Color::YELLOW);
+            center_text(&mut d, theme.name(), 92, 20, Color::LIGHTGRAY);
             let p1 = "P1: A/D move  W jump  S charge  F/G abilities  E knife";
             let p2 = "P2: arrows  , . abilities  / knife";
             text(&mut d, p1, 15, H - 32, 22, Color::WHITE);
             text(&mut d, p2, W - text_width(p2, 22) - 15, H - 32, 22, Color::WHITE);
             if let Some(msg) = &result {
-                center_text(&mut d, msg, 240, 80, Color::YELLOW);
-                center_text(&mut d, "Press R to pick again", 340, 36, Color::WHITE);
+                d.draw_rectangle(0, 190, W, 260, Color::new(0, 0, 0, 150));
+                center_text(&mut d, msg, 205, 56, Color::YELLOW);
+                center_text(
+                    &mut d,
+                    &format!("TALLY   P1 {}  -  {} P2", wins[0], wins[1]),
+                    285,
+                    40,
+                    Color::WHITE,
+                );
+                if series_over {
+                    let final_text = if wins[0] > wins[1] {
+                        format!("P1 WINS THE MATCH {} - {}", wins[0], wins[1])
+                    } else if wins[1] > wins[0] {
+                        format!("P2 WINS THE MATCH {} - {}", wins[1], wins[0])
+                    } else {
+                        format!("MATCH DRAWN {} - {}", wins[0], wins[1])
+                    };
+                    center_text(&mut d, &final_text, 345, 48, Color::LIME);
+                    center_text(&mut d, "Press R to go back to the menu", 405, 28, Color::WHITE);
+                } else {
+                    let next = THEMES[cycle(theme_idx, THEMES.len(), 1)].name();
+                    center_text(&mut d, &format!("Next map: {}", next), 350, 30, Color::LIGHTGRAY);
+                    center_text(&mut d, "Press SPACE for the next round  (R = menu)", 395, 28, Color::WHITE);
+                }
             }
         }
     }
