@@ -5,7 +5,6 @@ const W: i32 = 1280;
 const H: i32 = 720;
 const SIZE: f32 = 60.0; // smaller than the solo prototype so two fit in an arena
 const TOP_SPEED: f32 = 350.0; // px per second
-const ACCEL: f32 = TOP_SPEED / 0.25; // reach top speed in 250ms
 const ICE: f32 = 400.0; // slide after letting go
 const JUMP: f32 = 200.0; // normal jump height in pixels
 const MAX_CHARGE: f32 = 3.5; // full charge = 3.5x jump
@@ -25,7 +24,6 @@ const SHIELD_TIME: f32 = 1.2;
 const BOOM_TIME: f32 = 0.3;
 const MELEE_TIME: f32 = 0.25; // length of the knife swing
 const MELEE_CD: f32 = 0.0; // no cooldown (you still finish the swing in progress)
-const MELEE_DMG: f32 = 10.0;
 const MELEE_REACH: f32 = 80.0;
 const LAVA_DPS: f32 = 35.0;
 const MAX_SPEED: f32 = 1500.0; // knockback never launches anyone faster than this
@@ -35,6 +33,24 @@ const FROZEN_TIME: f32 = 1.3;
 const BURN_TIME: f32 = 2.5;
 const KO_TIME: f32 = 1.8; // slow-motion KO cinematic
 const KO_SLOW: f32 = 0.25;
+
+// ---- movement tech ----
+const WALL_SLIDE: f32 = 140.0; // max fall speed while sliding down a wall
+const WALL_KICK: f32 = 430.0; // sideways push off a wall jump
+
+// ---- combat depth ----
+const BLOCK_MAX: f32 = 1.6; // longest you can hold a guard
+const PARRY_WINDOW: f32 = 0.16; // block right as a hit lands to parry it
+const ULT_MAX: f32 = 100.0;
+const COMBO_WINDOW: f32 = 1.8;
+
+// ---- modes ----
+const TIME_LIMIT: f32 = 60.0;
+const HILL_TIME: f32 = 90.0;
+const HILL_TARGET: f32 = 30.0;
+const HILL_MOVE: f32 = 15.0;
+const STOCKS: i32 = 3;
+const RESPAWN_TIME: f32 = 1.6;
 
 // =====================================================================
 // small helpers
@@ -112,9 +128,12 @@ enum Kind {
     Dasher,
     Bomber,
     Shielder,
+    Titan,
+    Ghost,
+    Spark,
 }
 
-const KINDS: [Kind; 3] = [Kind::Dasher, Kind::Bomber, Kind::Shielder];
+const KINDS: [Kind; 6] = [Kind::Dasher, Kind::Bomber, Kind::Shielder, Kind::Titan, Kind::Ghost, Kind::Spark];
 
 impl Kind {
     fn name(self) -> &'static str {
@@ -122,6 +141,9 @@ impl Kind {
             Kind::Dasher => "DASHER",
             Kind::Bomber => "BOMBER",
             Kind::Shielder => "SHIELDER",
+            Kind::Titan => "TITAN",
+            Kind::Ghost => "GHOST",
+            Kind::Spark => "SPARK",
         }
     }
     fn color(self) -> Color {
@@ -129,6 +151,9 @@ impl Kind {
             Kind::Dasher => Color::ORANGE,
             Kind::Bomber => Color::new(220, 60, 60, 255),
             Kind::Shielder => Color::new(40, 170, 160, 255),
+            Kind::Titan => Color::new(110, 120, 160, 255),
+            Kind::Ghost => Color::new(225, 220, 255, 255),
+            Kind::Spark => Color::new(255, 230, 60, 255),
         }
     }
     // indices into ABILITIES
@@ -137,6 +162,91 @@ impl Kind {
             Kind::Dasher => [0, 1],
             Kind::Bomber => [2, 3],
             Kind::Shielder => [4, 5],
+            Kind::Titan => [1, 5],
+            Kind::Ghost => [6, 7],
+            Kind::Spark => [8, 0],
+        }
+    }
+    // ---- passive traits ----
+    fn max_hp(self) -> f32 {
+        match self {
+            Kind::Titan => 130.0,
+            Kind::Ghost => 85.0,
+            Kind::Spark => 90.0,
+            _ => MAX_HP,
+        }
+    }
+    fn speed(self) -> f32 {
+        match self {
+            Kind::Dasher => 1.1,
+            Kind::Titan => 0.85,
+            Kind::Spark => 1.25,
+            _ => 1.0,
+        }
+    }
+    fn kb_resist(self) -> f32 {
+        if self == Kind::Titan {
+            0.55
+        } else {
+            1.0
+        }
+    }
+    fn dmg_taken(self) -> f32 {
+        if self == Kind::Shielder {
+            0.85
+        } else {
+            1.0
+        }
+    }
+    fn grav(self) -> f32 {
+        match self {
+            Kind::Ghost => 0.75,
+            Kind::Titan => 1.1,
+            _ => 1.0,
+        }
+    }
+    fn air_jumps(self) -> i32 {
+        match self {
+            Kind::Titan => 0,
+            Kind::Ghost => 2,
+            _ => 1,
+        }
+    }
+    fn melee_dmg(self) -> f32 {
+        match self {
+            Kind::Spark => 14.0,
+            Kind::Titan => 12.0,
+            _ => 10.0,
+        }
+    }
+    fn passive(self) -> &'static str {
+        match self {
+            Kind::Dasher => "PASSIVE: +10% speed",
+            Kind::Bomber => "PASSIVE: bombs hit 20% harder",
+            Kind::Shielder => "PASSIVE: takes 15% less damage",
+            Kind::Titan => "PASSIVE: 130 HP, resists knockback, slow, no double jump",
+            Kind::Ghost => "PASSIVE: 85 HP, floaty, two air jumps",
+            Kind::Spark => "PASSIVE: 90 HP, +25% speed, stronger knife",
+        }
+    }
+    fn ult_name(self) -> &'static str {
+        match self {
+            Kind::Dasher => "OVERDRIVE",
+            Kind::Bomber => "CARPET BOMB",
+            Kind::Shielder => "AEGIS NOVA",
+            Kind::Titan => "EARTHQUAKE",
+            Kind::Ghost => "DEEP FREEZE",
+            Kind::Spark => "LIGHTNING STORM",
+        }
+    }
+    fn ult_blurb(self) -> &'static str {
+        match self {
+            Kind::Dasher => "6s faster, cooldowns x3, knife x1.8",
+            Kind::Bomber => "bombs rain across the arena",
+            Kind::Shielder => "3s invincible + blast wave",
+            Kind::Titan => "foe on the ground: 25 dmg + launch",
+            Kind::Ghost => "freeze them 2s from anywhere",
+            Kind::Spark => "5 bolts strike around them",
         }
     }
 }
@@ -277,6 +387,39 @@ impl Setup {
 }
 
 // =====================================================================
+// game modes
+// =====================================================================
+
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    Classic,
+    Timed,
+    Stock,
+    Hill,
+}
+
+const MODES: [Mode; 4] = [Mode::Classic, Mode::Timed, Mode::Stock, Mode::Hill];
+
+impl Mode {
+    fn name(self) -> &'static str {
+        match self {
+            Mode::Classic => "CLASSIC",
+            Mode::Timed => "TIMED",
+            Mode::Stock => "STOCK",
+            Mode::Hill => "KING OF THE HILL",
+        }
+    }
+    fn blurb(self) -> &'static str {
+        match self {
+            Mode::Classic => "a round is won when the other square is knocked out",
+            Mode::Timed => "60 second clock - KO wins, otherwise most HP wins",
+            Mode::Stock => "3 lives per round, you respawn until they run out",
+            Mode::Hill => "stand in the glowing zone to score, 30 points or most in 90s",
+        }
+    }
+}
+
+// =====================================================================
 // effects: particles, rings, screen shake, hit-stop ("cinematics")
 // =====================================================================
 
@@ -343,6 +486,51 @@ struct Strike {
     pts: Vec<Vector2>,
 }
 
+// arena meteor: shows a warning, then falls diagonally and explodes
+struct Meteor {
+    tx: f32,
+    warn: f32,
+    x: f32,
+    y: f32,
+    vx: f32,
+    vy: f32,
+    falling: bool,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum PickKind {
+    Health,
+    Power,
+    Haste,
+    Reset,
+}
+
+struct Pickup {
+    x: f32,
+    y: f32,
+    kind: PickKind,
+    age: f32,
+}
+
+impl PickKind {
+    fn color(self) -> Color {
+        match self {
+            PickKind::Health => Color::new(70, 220, 90, 255),
+            PickKind::Power => Color::new(235, 70, 60, 255),
+            PickKind::Haste => Color::new(60, 200, 255, 255),
+            PickKind::Reset => Color::new(255, 220, 70, 255),
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            PickKind::Health => "+",
+            PickKind::Power => "P",
+            PickKind::Haste => ">",
+            PickKind::Reset => "C",
+        }
+    }
+}
+
 struct Fx {
     shake: f32,   // screen shake in pixels
     hitstop: f32, // freeze-frame seconds
@@ -355,6 +543,9 @@ struct World {
     booms: Vec<Boom>,
     parts: Vec<Particle>,
     strikes: Vec<Strike>,
+    meteors: Vec<Meteor>,
+    pickups: Vec<Pickup>,
+    banner: Option<(String, Color, f32)>, // big ultimate / event text
     rng: Rng,
     fx: Fx,
 }
@@ -366,6 +557,9 @@ impl World {
             booms: Vec::new(),
             parts: Vec::new(),
             strikes: Vec::new(),
+            meteors: Vec::new(),
+            pickups: Vec::new(),
+            banner: None,
             rng: Rng(2463534242),
             fx: Fx { shake: 0.0, hitstop: 0.0, punch: 0.0, flash: 0.0 },
         }
@@ -376,6 +570,9 @@ impl World {
         self.booms.clear();
         self.parts.clear();
         self.strikes.clear();
+        self.meteors.clear();
+        self.pickups.clear();
+        self.banner = None;
         self.fx = Fx { shake: 0.0, hitstop: 0.0, punch: 0.0, flash: 0.0 };
     }
 
@@ -471,7 +668,7 @@ fn draw_particles(d: &mut impl RaylibDraw, parts: &[Particle]) {
 }
 
 // =====================================================================
-// players and world
+// input (humans read the keyboard, the CPU builds the same struct)
 // =====================================================================
 
 #[derive(Clone, Copy)]
@@ -483,7 +680,92 @@ struct Keys {
     a1: KeyboardKey,
     a2: KeyboardKey,
     melee: KeyboardKey,
+    block: KeyboardKey,
+    ult: KeyboardKey,
 }
+
+#[derive(Clone, Copy, Default)]
+struct Input {
+    left: bool,
+    right: bool,
+    down: bool,
+    jump: bool,
+    a1: bool,
+    a2: bool,
+    melee: bool,
+    block_down: bool,
+    ult: bool,
+}
+
+fn read_input(rl: &RaylibHandle, k: &Keys) -> Input {
+    Input {
+        left: rl.is_key_down(k.left),
+        right: rl.is_key_down(k.right),
+        down: rl.is_key_down(k.down),
+        jump: rl.is_key_pressed(k.up),
+        a1: rl.is_key_pressed(k.a1),
+        a2: rl.is_key_pressed(k.a2),
+        melee: rl.is_key_pressed(k.melee),
+        block_down: rl.is_key_down(k.block),
+        ult: rl.is_key_pressed(k.ult),
+    }
+}
+
+// a simple CPU opponent: chases, jumps, fights, blocks incoming attacks
+fn bot_input(me: &Player, foe: &Player, rng: &mut Rng) -> Input {
+    let mut i = Input::default();
+    let (mx, _) = me.center();
+    let (fx, fy) = foe.center();
+    let my = me.center().1;
+    let dx = fx - mx;
+    let dy = fy - my;
+    let dist = dx.abs();
+    let want = if dist > 110.0 {
+        dx.signum()
+    } else if dist < 60.0 && rng.next() < 0.3 {
+        -dx.signum()
+    } else {
+        0.0
+    };
+    if want > 0.0 {
+        i.right = true;
+    } else if want < 0.0 {
+        i.left = true;
+    }
+    if me.on_ground {
+        if dy < -80.0 && rng.next() < 0.06 {
+            i.jump = true;
+        } else if me.vx.abs() < 5.0 && want != 0.0 && rng.next() < 0.1 {
+            i.jump = true;
+        } else if rng.next() < 0.004 {
+            i.jump = true;
+        }
+    } else if me.wall_dir != 0.0 && rng.next() < 0.1 {
+        i.jump = true;
+    } else if me.air_jumps > 0 && dy < -120.0 && me.vy > 0.0 && rng.next() < 0.05 {
+        i.jump = true;
+    }
+    if dist < 95.0 && dy.abs() < 80.0 && rng.next() < 0.12 {
+        i.melee = true;
+    }
+    if me.cd1 <= 0.0 && dist < 520.0 && rng.next() < 0.03 {
+        i.a1 = true;
+    }
+    if me.cd2 <= 0.0 && dist < 520.0 && rng.next() < 0.03 {
+        i.a2 = true;
+    }
+    if (foe.melee_t > 0.0 || foe.dash_t > 0.0) && dist < 160.0 && rng.next() < 0.5 {
+        i.block_down = true;
+    }
+    if me.ult >= ULT_MAX && dist < 600.0 && rng.next() < 0.05 {
+        i.ult = true;
+    }
+    i
+}
+
+// =====================================================================
+// players and world
+// =====================================================================
 
 struct Player {
     x: f32,
@@ -498,11 +780,13 @@ struct Player {
     facing: f32,
     eyes: Eyes,
     hp: f32,
+    max_hp: f32,
     kind: Kind,
     abilities: [Ability; 2],
     trail_style: usize,
     trail_color: usize,
     trail_acc: f32,
+    #[allow(dead_code)]
     keys: Keys,
     cd1: f32,
     cd2: f32,
@@ -518,10 +802,29 @@ struct Player {
     frozen_t: f32,
     burn_t: f32,
     regen_t: f32,
+    stun_t: f32,
+    // movement tech
+    wall_dir: f32,
+    air_jumps: i32,
+    // guard / parry
+    block_held: bool,
+    block_prev: bool,
+    block_t: f32,
+    block_cd: f32,
+    parry_t: f32,
+    parried: bool,
+    blocked: bool,
+    // ultimate and buffs
+    ult: f32,
+    over_t: f32,
+    power_t: f32,
+    haste_t: f32,
+    dead_t: f32,
 }
 
 impl Player {
     fn new(setup: &Setup, x: f32, facing: f32, keys: Keys) -> Self {
+        let kind = KINDS[setup.kind];
         let mut p = Player {
             x,
             y: H as f32 - FLOOR_H - SIZE,
@@ -534,8 +837,9 @@ impl Player {
             tap_timer: 0.0,
             facing,
             eyes: Eyes::Forward,
-            hp: MAX_HP,
-            kind: KINDS[setup.kind],
+            hp: kind.max_hp(),
+            max_hp: kind.max_hp(),
+            kind,
             abilities: [ABILITIES[setup.abil[0]], ABILITIES[setup.abil[1]]],
             trail_style: setup.trail,
             trail_color: setup.color,
@@ -555,6 +859,21 @@ impl Player {
             frozen_t: 0.0,
             burn_t: 0.0,
             regen_t: 0.0,
+            stun_t: 0.0,
+            wall_dir: 0.0,
+            air_jumps: kind.air_jumps(),
+            block_held: false,
+            block_prev: false,
+            block_t: 0.0,
+            block_cd: 0.0,
+            parry_t: 0.0,
+            parried: false,
+            blocked: false,
+            ult: 0.0,
+            over_t: 0.0,
+            power_t: 0.0,
+            haste_t: 0.0,
+            dead_t: 0.0,
         };
         p.apply_setup(setup);
         p
@@ -575,10 +894,39 @@ impl Player {
         (self.x + SIZE / 2.0, self.y + SIZE / 2.0)
     }
 
-    // damage + knockback; shield blocks everything
+    fn speed_mult(&self) -> f32 {
+        let mut m = self.kind.speed();
+        if self.haste_t > 0.0 {
+            m *= 1.4;
+        }
+        if self.over_t > 0.0 {
+            m *= 1.5;
+        }
+        if self.block_held {
+            m *= 0.5;
+        }
+        m
+    }
+
+    // damage + knockback. Shield blocks everything, a well-timed block parries,
+    // a held block takes a fraction of the hit and no knockback.
     fn hurt(&mut self, dmg: f32, kx: f32, ky: f32) {
-        if self.shield_t > 0.0 {
+        if self.dead_t > 0.0 || self.shield_t > 0.0 {
             return;
+        }
+        if self.parry_t > 0.0 {
+            self.parry_t = 0.0;
+            self.parried = true;
+            return;
+        }
+        let mut dmg = dmg * self.kind.dmg_taken();
+        let mut kx = kx * self.kind.kb_resist();
+        let mut ky = ky * self.kind.kb_resist();
+        if self.block_held {
+            dmg *= 0.3;
+            kx *= 0.2;
+            ky = 0.0;
+            self.blocked = true;
         }
         self.hp = (self.hp - dmg).max(0.0);
         self.vx = (self.vx + kx).clamp(-MAX_SPEED, MAX_SPEED);
@@ -614,9 +962,9 @@ impl Theme {
     }
     fn blurb(self) -> &'static str {
         match self {
-            Theme::Meadow => "open hills and floating islands",
-            Theme::Skyline => "rooftops and towers with a gap between them",
-            Theme::Volcano => "lava on the floor hurts - stay off it!",
+            Theme::Meadow => "open hills, wind gusts push everyone",
+            Theme::Skyline => "rooftops and towers, meteors fall",
+            Theme::Volcano => "lava surges and meteors - stay off the floor!",
         }
     }
 }
@@ -624,12 +972,14 @@ impl Theme {
 struct Map {
     solids: Vec<Solid>,
     hazard: Option<Rectangle>, // lava: damages while you touch it
+    zones: Vec<Rectangle>,     // king of the hill spots
     spawns: [f32; 2],
 }
 
 fn make_map(theme: Theme) -> Map {
     let floor_y = H as f32 - FLOOR_H;
     let b = |x: f32, y: f32, w: f32, h: f32| Solid { r: Rectangle::new(x, y, w, h) };
+    let z = |x: f32, y: f32, w: f32, h: f32| Rectangle::new(x, y, w, h);
     let floor = b(0.0, floor_y, W as f32, FLOOR_H);
     match theme {
         Theme::Meadow => Map {
@@ -645,6 +995,7 @@ fn make_map(theme: Theme) -> Map {
                 b(880.0, 330.0, 200.0, 20.0),
             ],
             hazard: None,
+            zones: vec![z(520.0, 340.0, 240.0, 80.0), z(140.0, 440.0, 240.0, 80.0), z(900.0, 440.0, 240.0, 80.0)],
             spawns: [120.0, W as f32 - 120.0 - SIZE],
         },
         Theme::Skyline => Map {
@@ -660,6 +1011,7 @@ fn make_map(theme: Theme) -> Map {
                 b(560.0, 270.0, 160.0, 20.0),
             ],
             hazard: None,
+            zones: vec![z(560.0, 320.0, 160.0, 80.0), z(400.0, 420.0, 140.0, 80.0), z(190.0, 320.0, 180.0, 80.0)],
             spawns: [210.0, W as f32 - 210.0 - SIZE],
         },
         Theme::Volcano => Map {
@@ -675,8 +1027,47 @@ fn make_map(theme: Theme) -> Map {
                 b(560.0, 280.0, 160.0, 20.0),
             ],
             hazard: Some(Rectangle::new(470.0, floor_y - 10.0, 340.0, 14.0)),
+            zones: vec![z(560.0, 440.0, 160.0, 80.0), z(330.0, 320.0, 160.0, 80.0), z(790.0, 320.0, 160.0, 80.0)],
             spawns: [120.0, W as f32 - 120.0 - SIZE],
         },
+    }
+}
+
+// =====================================================================
+// per-round state
+// =====================================================================
+
+struct Round {
+    time: f32,
+    stocks: [i32; 2],
+    hill: [f32; 2],
+    zone_idx: usize,
+    zone_t: f32,
+    pickup_t: f32,
+    meteor_t: f32,
+    wind: f32,
+    wind_warn: bool,
+    combo: [u32; 2],
+    combo_t: [f32; 2],
+    combo_show: [f32; 2],
+}
+
+impl Round {
+    fn new() -> Self {
+        Round {
+            time: 0.0,
+            stocks: [STOCKS, STOCKS],
+            hill: [0.0, 0.0],
+            zone_idx: 0,
+            zone_t: HILL_MOVE,
+            pickup_t: 6.0,
+            meteor_t: 4.0,
+            wind: 0.0,
+            wind_warn: false,
+            combo: [0, 0],
+            combo_t: [0.0, 0.0],
+            combo_show: [0.0, 0.0],
+        }
     }
 }
 
@@ -737,7 +1128,7 @@ fn push_out_x(p: &mut Player, solids: &[Solid]) {
 fn collide_players(pl: &mut [Player; 2], solids: &[Solid]) {
     let (a, b) = pl.split_at_mut(1);
     let (a, b) = (&mut a[0], &mut b[0]);
-    if !overlaps(&a.rect(), &b.rect()) {
+    if a.dead_t > 0.0 || b.dead_t > 0.0 || !overlaps(&a.rect(), &b.rect()) {
         return;
     }
     let ox = (a.x + SIZE).min(b.x + SIZE) - a.x.max(b.x);
@@ -771,7 +1162,7 @@ fn step_once(p: &mut Player, solids: &[Solid], dt: f32) {
     push_out_x(p, solids);
 
     if p.dash_t <= 0.0 {
-        p.vy += GRAVITY * dt;
+        p.vy += GRAVITY * p.kind.grav() * dt;
     }
     let prev_bottom = p.y + SIZE;
     p.y += p.vy * dt;
@@ -791,6 +1182,26 @@ fn step_once(p: &mut Player, solids: &[Solid], dt: f32) {
     }
 }
 
+// which side (if any) is a wall within reach: -1 left, 1 right, 0 none
+fn wall_side(p: &Player, solids: &[Solid]) -> f32 {
+    if p.on_ground {
+        return 0.0;
+    }
+    if p.x <= 1.0 {
+        return -1.0;
+    }
+    if p.x >= W as f32 - SIZE - 1.0 {
+        return 1.0;
+    }
+    for dir in [-1.0_f32, 1.0] {
+        let probe = Rectangle::new(p.x + dir * 3.0, p.y + 6.0, SIZE, SIZE - 12.0);
+        if solids.iter().any(|s| overlaps(&probe, &s.r)) {
+            return dir;
+        }
+    }
+    0.0
+}
+
 // move + collide; fast movers are split into small steps so nobody tunnels
 fn step(p: &mut Player, solids: &[Solid], dt: f32) {
     let moves = (p.vx.abs().max(p.vy.abs()) * dt / 20.0).ceil().clamp(1.0, 8.0) as i32;
@@ -799,6 +1210,7 @@ fn step(p: &mut Player, solids: &[Solid], dt: f32) {
         step_once(p, solids, sub);
     }
     clamp_to_arena(p);
+    p.wall_dir = wall_side(p, solids);
 }
 
 fn launch(p: &mut Player, power: f32) {
@@ -936,6 +1348,86 @@ fn use_ability(ab: Ability, me: &mut Player, foe: &mut Player, my_idx: usize, so
     }
 }
 
+// each character's ultimate: a big cinematic super move
+fn use_ult(me: &mut Player, foe: &mut Player, my_idx: usize, w: &mut World) {
+    let (cx, cy) = me.center();
+    let col = me.kind.color();
+    w.fx.hitstop = w.fx.hitstop.max(0.25);
+    w.fx.flash = w.fx.flash.max(0.6);
+    w.fx.punch = w.fx.punch.max(0.1);
+    w.shake(16.0);
+    w.ring(cx, cy, 300.0, Color::WHITE);
+    w.ring(cx, cy, 200.0, col);
+    w.burst(cx, cy, 30, col, 600.0, 0.7, 8.0, Shape::Star, 0.0);
+    w.banner = Some((me.kind.ult_name().to_string(), col, 1.5));
+    match me.kind {
+        Kind::Dasher => {
+            me.over_t = 6.0;
+            me.cd1 = 0.0;
+            me.cd2 = 0.0;
+        }
+        Kind::Bomber => {
+            for k in 0..8 {
+                w.projs.push(Proj {
+                    x: 90.0 + k as f32 * 150.0,
+                    y: -40.0 - k as f32 * 70.0,
+                    vx: 0.0,
+                    vy: 260.0,
+                    owner: my_idx,
+                    life: 5.0,
+                    kind: ProjKind::Bomb,
+                });
+            }
+        }
+        Kind::Shielder => {
+            me.shield_t = 3.0;
+            let (fx, fy) = foe.center();
+            let dist = ((fx - cx).powi(2) + (fy - cy).powi(2)).sqrt();
+            if dist < 450.0 {
+                let dir = if fx >= cx { 1.0 } else { -1.0 };
+                foe.hurt(18.0, dir * 900.0, -300.0);
+            }
+            w.ring(cx, cy, 450.0, Color::new(150, 230, 255, 255));
+        }
+        Kind::Titan => {
+            w.shake(30.0);
+            for k in 0..14 {
+                let x = 40.0 + k as f32 * 95.0;
+                w.burst(x, H as f32 - FLOOR_H, 4, Color::new(120, 100, 80, 255), 380.0, 0.9, 12.0, Shape::Square, 900.0);
+            }
+            w.ring(cx, me.y + SIZE, 600.0, Color::new(255, 190, 80, 255));
+            if foe.on_ground && foe.dead_t <= 0.0 {
+                foe.hurt(25.0, 0.0, -650.0);
+                foe.stun_t = 0.6;
+            }
+        }
+        Kind::Ghost => {
+            let (fx, fy) = foe.center();
+            if foe.shield_t <= 0.0 && foe.dead_t <= 0.0 {
+                foe.frozen_t = 2.0;
+                foe.vx = 0.0;
+                foe.hp = (foe.hp - 10.0).max(0.0);
+                foe.hurt_t = 0.15;
+            }
+            w.ring(fx, fy, 260.0, Color::new(170, 235, 255, 255));
+            w.burst(fx, fy, 30, Color::new(190, 240, 255, 255), 500.0, 0.8, 8.0, Shape::Star, 200.0);
+        }
+        Kind::Spark => {
+            let (fx, _) = foe.center();
+            for (k, off) in [-240.0_f32, -120.0, 0.0, 120.0, 240.0].iter().enumerate() {
+                w.strikes.push(Strike {
+                    x: (fx + off).clamp(40.0, W as f32 - 40.0),
+                    t: 0.8 + k as f32 * 0.22,
+                    owner: my_idx,
+                    struck: false,
+                    vis: 0.0,
+                    pts: Vec::new(),
+                });
+            }
+        }
+    }
+}
+
 // runs AFTER collisions are resolved, so landing on the other square counts too
 fn slam_land(me: &mut Player, foe: &mut Player, w: &mut World) {
     if !(me.slam && me.on_ground) {
@@ -975,6 +1467,7 @@ fn explode(players: &mut [Player; 2], owner: usize, cx: f32, cy: f32, w: &mut Wo
     w.shake(12.0);
     w.fx.punch = w.fx.punch.max(0.04);
     w.fx.flash = w.fx.flash.max(0.15);
+    let mult = if players[owner].kind == Kind::Bomber { 1.2 } else { 1.0 };
     let reach = BLAST_R + SIZE / 2.0;
     for j in 0..2 {
         let p = &mut players[j];
@@ -992,7 +1485,7 @@ fn explode(players: &mut [Player; 2], owner: usize, cx: f32, cy: f32, w: &mut Wo
             p.vy = ny * 600.0 * f - 100.0;
             p.on_ground = false;
         } else {
-            p.hurt(25.0 * f, nx * 600.0 * f, ny * 600.0 * f - 200.0);
+            p.hurt(25.0 * f * mult, nx * 600.0 * f, ny * 600.0 * f - 200.0);
         }
     }
 }
@@ -1065,14 +1558,14 @@ fn update_projs(players: &mut [Player; 2], solids: &[Solid], w: &mut World, dt: 
             }
         }
 
-        let mut end = b.life <= 0.0 || b.x < 0.0 || b.x > W as f32 || b.y > H as f32 || b.y < -50.0;
+        let mut end = b.life <= 0.0 || b.x < 0.0 || b.x > W as f32 || b.y > H as f32 || b.y < -400.0;
         let br = Rectangle::new(b.x - 8.0, b.y - 8.0, 16.0, 16.0);
-        if solids.iter().any(|s| overlaps(&br, &s.r)) {
+        if b.y > 0.0 && solids.iter().any(|s| overlaps(&br, &s.r)) {
             end = true;
         }
         let foe = 1 - b.owner;
         let mut hit = false;
-        if overlaps(&br, &players[foe].rect()) {
+        if players[foe].dead_t <= 0.0 && overlaps(&br, &players[foe].rect()) {
             if players[foe].shield_t > 0.0 {
                 // reflected back at the thrower
                 b.vx = -b.vx;
@@ -1136,19 +1629,187 @@ fn update_strikes(players: &mut [Player; 2], w: &mut World, dt: f32) {
 }
 
 // =====================================================================
+// map events: wind, meteors, pickups
+// =====================================================================
+
+fn update_meteors(players: &mut [Player; 2], solids: &[Solid], w: &mut World, dt: f32) {
+    let ground = H as f32 - FLOOR_H;
+    let meteors = std::mem::take(&mut w.meteors);
+    let mut keep = Vec::new();
+    for mut m in meteors {
+        if !m.falling {
+            m.warn -= dt;
+            if m.warn <= 0.0 {
+                m.falling = true;
+                m.x = m.tx - 300.0;
+                m.y = -60.0;
+                m.vx = 272.0;
+                m.vy = 672.0;
+            }
+            keep.push(m);
+            continue;
+        }
+        m.x += m.vx * dt;
+        m.y += m.vy * dt;
+        let mut q = Particle::new(m.x, m.y, w.rng.range(-40.0, 40.0), w.rng.range(-60.0, 0.0), 0.5, 10.0, Color::new(255, 140 + (w.rng.next() * 90.0) as u8, 30, 230), Shape::Circle);
+        q.grav = -50.0;
+        w.parts.push(q);
+        let r = Rectangle::new(m.x - 14.0, m.y - 14.0, 28.0, 28.0);
+        let hit = m.y >= ground || (m.y > 0.0 && solids.iter().any(|s| overlaps(&r, &s.r)));
+        if hit {
+            let (ix, iy) = (m.x, m.y.min(ground));
+            w.ring(ix, iy, 120.0, Color::new(255, 150, 50, 255));
+            w.ring(ix, iy, 70.0, Color::WHITE);
+            w.burst(ix, iy, 26, Color::new(255, 160, 40, 255), 480.0, 0.6, 9.0, Shape::Circle, 100.0);
+            w.burst(ix, iy, 12, Color::new(90, 70, 60, 255), 420.0, 0.8, 9.0, Shape::Square, 800.0);
+            w.shake(14.0);
+            w.fx.flash = w.fx.flash.max(0.15);
+            for p in players.iter_mut() {
+                let (px, py) = p.center();
+                let d = ((px - ix).powi(2) + (py - iy).powi(2)).sqrt();
+                if d < 130.0 {
+                    let dir = if px >= ix { 1.0 } else { -1.0 };
+                    p.hurt(15.0, dir * 450.0, -300.0);
+                }
+            }
+        } else {
+            keep.push(m);
+        }
+    }
+    w.meteors = keep;
+}
+
+fn update_events(theme: Theme, rd: &mut Round, players: &mut [Player; 2], solids: &[Solid], w: &mut World, dt: f32) {
+    match theme {
+        Theme::Meadow => {
+            let cyc = rd.time % 14.0;
+            let n = (rd.time / 14.0) as i32;
+            let dir: f32 = if n % 2 == 0 { 1.0 } else { -1.0 };
+            rd.wind = if cyc >= 10.0 { dir } else { 0.0 };
+            rd.wind_warn = (8.0..10.0).contains(&cyc);
+            if rd.wind != 0.0 {
+                for p in players.iter_mut() {
+                    if p.dead_t <= 0.0 {
+                        p.x += rd.wind * 140.0 * dt;
+                        push_out_x(p, solids);
+                    }
+                }
+                for _ in 0..2 {
+                    let sx = if rd.wind > 0.0 { -10.0 } else { W as f32 + 10.0 };
+                    let y = w.rng.range(0.0, H as f32 - FLOOR_H);
+                    let vx = rd.wind * w.rng.range(700.0, 1000.0);
+                    let q = Particle::new(sx, y, vx, w.rng.range(-30.0, 30.0), 2.0, 3.0, Color::new(255, 255, 255, 150), Shape::Streak);
+                    w.parts.push(q);
+                }
+            }
+        }
+        Theme::Skyline | Theme::Volcano => {
+            rd.meteor_t -= dt;
+            if rd.meteor_t <= 0.0 {
+                rd.meteor_t = if theme == Theme::Skyline { w.rng.range(4.0, 6.5) } else { w.rng.range(3.5, 5.5) };
+                let tx = w.rng.range(100.0, W as f32 - 100.0);
+                w.meteors.push(Meteor { tx, warn: 1.0, x: 0.0, y: 0.0, vx: 0.0, vy: 0.0, falling: false });
+            }
+        }
+    }
+    update_meteors(players, solids, w, dt);
+}
+
+fn update_pickups(players: &mut [Player; 2], solids: &[Solid], rd: &mut Round, w: &mut World, dt: f32) {
+    rd.pickup_t -= dt;
+    if rd.pickup_t <= 0.0 && w.pickups.len() < 2 {
+        rd.pickup_t = w.rng.range(8.0, 11.0);
+        let si = (w.rng.next() * solids.len() as f32) as usize % solids.len();
+        let r = solids[si].r;
+        if r.width >= 70.0 {
+            let x = r.x + w.rng.range(30.0, r.width - 30.0);
+            let kind = match (w.rng.next() * 4.0) as i32 {
+                0 => PickKind::Health,
+                1 => PickKind::Power,
+                2 => PickKind::Haste,
+                _ => PickKind::Reset,
+            };
+            w.ring(x, r.y - 30.0, 40.0, kind.color());
+            w.pickups.push(Pickup { x, y: r.y - 30.0, kind, age: 0.0 });
+        }
+    }
+    let pickups = std::mem::take(&mut w.pickups);
+    let mut keep = Vec::new();
+    for mut pk in pickups {
+        pk.age += dt;
+        let area = Rectangle::new(pk.x - 24.0, pk.y - 24.0, 48.0, 48.0);
+        let mut taken = false;
+        for p in players.iter_mut() {
+            if p.dead_t <= 0.0 && !taken && overlaps(&area, &p.rect()) {
+                taken = true;
+                match pk.kind {
+                    PickKind::Health => p.hp = (p.hp + 25.0).min(p.max_hp),
+                    PickKind::Power => p.power_t = 8.0,
+                    PickKind::Haste => p.haste_t = 8.0,
+                    PickKind::Reset => {
+                        p.cd1 = 0.0;
+                        p.cd2 = 0.0;
+                        p.ult = (p.ult + 25.0).min(ULT_MAX);
+                    }
+                }
+            }
+        }
+        if taken {
+            w.ring(pk.x, pk.y, 90.0, pk.kind.color());
+            w.burst(pk.x, pk.y, 18, pk.kind.color(), 320.0, 0.6, 6.0, Shape::Star, 0.0);
+        } else {
+            keep.push(pk);
+        }
+    }
+    w.pickups = keep;
+}
+
+// =====================================================================
 // player update
 // =====================================================================
 
-fn update_player(rl: &RaylibHandle, me: &mut Player, foe: &mut Player, my_idx: usize, solids: &[Solid], w: &mut World, dt: f32) {
-    me.cd1 = (me.cd1 - dt).max(0.0);
-    me.cd2 = (me.cd2 - dt).max(0.0);
+fn update_player(inp: &Input, me: &mut Player, foe: &mut Player, my_idx: usize, solids: &[Solid], w: &mut World, dt: f32) {
+    let cd_tick = if me.over_t > 0.0 { dt * 3.0 } else { dt };
+    me.cd1 = (me.cd1 - cd_tick).max(0.0);
+    me.cd2 = (me.cd2 - cd_tick).max(0.0);
     me.shield_t = (me.shield_t - dt).max(0.0);
     me.hurt_t = (me.hurt_t - dt).max(0.0);
     me.frozen_t = (me.frozen_t - dt).max(0.0);
-    let can_act = me.frozen_t <= 0.0;
+    me.stun_t = (me.stun_t - dt).max(0.0);
+    me.power_t = (me.power_t - dt).max(0.0);
+    me.haste_t = (me.haste_t - dt).max(0.0);
+    me.over_t = (me.over_t - dt).max(0.0);
+    me.parry_t = (me.parry_t - dt).max(0.0);
+    me.block_cd = (me.block_cd - dt).max(0.0);
+    me.ult = (me.ult + 1.5 * dt).min(ULT_MAX); // slow passive charge
+    let can_act = me.frozen_t <= 0.0 && me.stun_t <= 0.0;
     let (cx, cy) = me.center();
 
-    // ---- burning and healing over time ----
+    if me.on_ground {
+        me.air_jumps = me.kind.air_jumps();
+    }
+
+    // ---- guard: hold to block, tap right as a hit lands to parry ----
+    let press = inp.block_down && !me.block_prev;
+    me.block_prev = inp.block_down;
+    if can_act && me.block_cd <= 0.0 && inp.block_down {
+        if press {
+            me.parry_t = PARRY_WINDOW;
+        }
+        me.block_held = true;
+        me.block_t += dt;
+        if me.block_t > BLOCK_MAX {
+            me.block_held = false;
+            me.block_cd = 1.2; // guard break: can't block for a moment
+            me.block_t = 0.0;
+        }
+    } else {
+        me.block_held = false;
+        me.block_t = (me.block_t - dt * 2.0).max(0.0);
+    }
+    let acting = can_act && !me.block_held;
+
+    // ---- burning, healing, buff and status particles ----
     if me.burn_t > 0.0 {
         me.burn_t -= dt;
         me.hp = (me.hp - 4.0 * dt).max(0.0);
@@ -1160,7 +1821,7 @@ fn update_player(rl: &RaylibHandle, me: &mut Player, foe: &mut Player, my_idx: u
     }
     if me.regen_t > 0.0 {
         me.regen_t -= dt;
-        me.hp = (me.hp + 9.0 * dt).min(MAX_HP);
+        me.hp = (me.hp + 9.0 * dt).min(me.max_hp);
         if w.rng.next() < 0.5 {
             let q = Particle::new(cx + w.rng.range(-25.0, 25.0), cy + 10.0, 0.0, -70.0, 0.7, 6.0, Color::new(110, 255, 140, 255), Shape::Star);
             w.parts.push(q);
@@ -1170,29 +1831,48 @@ fn update_player(rl: &RaylibHandle, me: &mut Player, foe: &mut Player, my_idx: u
         let q = Particle::new(cx + w.rng.range(-25.0, 25.0), cy + w.rng.range(-25.0, 25.0), 0.0, 30.0, 0.5, 4.0, Color::new(200, 240, 255, 255), Shape::Star);
         w.parts.push(q);
     }
+    if me.over_t > 0.0 && w.rng.next() < 0.6 {
+        let mut q = Particle::new(cx, cy, 0.0, 0.0, 0.25, SIZE, Color::new(255, 150, 40, 90), Shape::Ghost);
+        q.rot = me.rot;
+        w.parts.push(q);
+    }
+    if me.power_t > 0.0 && w.rng.next() < 0.3 {
+        let q = Particle::new(cx + w.rng.range(-25.0, 25.0), cy + 20.0, 0.0, -60.0, 0.5, 5.0, Color::new(255, 80, 60, 255), Shape::Star);
+        w.parts.push(q);
+    }
 
-    // ---- momentum: roll and slide ----
+    // ---- wall slide ----
     let mut push = 0.0;
     if can_act {
-        if rl.is_key_down(me.keys.right) {
+        if inp.right {
             push += 1.0;
         }
-        if rl.is_key_down(me.keys.left) {
+        if inp.left {
             push -= 1.0;
         }
     }
     if push != 0.0 {
         me.facing = push;
     }
+    if !me.on_ground && me.wall_dir != 0.0 && push == me.wall_dir && me.vy > 0.0 {
+        me.vy = me.vy.min(WALL_SLIDE);
+        if w.rng.next() < 0.4 {
+            let q = Particle::new(cx + me.wall_dir * 28.0, cy + 20.0, 0.0, -30.0, 0.3, 4.0, Color::new(220, 220, 220, 200), Shape::Circle);
+            w.parts.push(q);
+        }
+    }
 
+    // ---- momentum: roll and slide ----
+    let top = TOP_SPEED * me.speed_mult();
+    let accel = top / 0.25;
     if me.dash_t > 0.0 {
         me.dash_t -= dt;
         me.vx = me.facing * DASH_SPEED;
         me.vy = 0.0;
-    } else if push != 0.0 && me.vx * push < TOP_SPEED {
-        me.vx += push * ACCEL * dt;
-        if me.vx * push > TOP_SPEED {
-            me.vx = push * TOP_SPEED;
+    } else if push != 0.0 && me.vx * push < top {
+        me.vx += push * accel * dt;
+        if me.vx * push > top {
+            me.vx = push * top;
         }
     } else {
         // no input, or knocked faster than top speed: slide down
@@ -1206,20 +1886,36 @@ fn update_player(rl: &RaylibHandle, me: &mut Player, foe: &mut Player, my_idx: u
     }
 
     // ---- crouch, charge, jump ----
-    if can_act && rl.is_key_down(me.keys.down) && me.on_ground {
+    if acting && inp.down && me.on_ground {
         me.charge = (me.charge + dt).min(1.0);
         me.crouch = CROUCH;
     } else if me.tap_timer <= 0.0 {
         me.charge = 0.0;
         me.crouch = 0.0;
     }
-    if can_act && rl.is_key_pressed(me.keys.up) && me.on_ground && me.tap_timer <= 0.0 {
-        if me.charge > 0.0 {
-            let power = 1.0 + me.charge * (MAX_CHARGE - 1.0);
-            launch(me, power);
-        } else {
-            me.tap_timer = TAP_CROUCH;
-            me.crouch = CROUCH;
+    if acting && inp.jump {
+        if me.on_ground && me.tap_timer <= 0.0 {
+            if me.charge > 0.0 {
+                let power = 1.0 + me.charge * (MAX_CHARGE - 1.0);
+                launch(me, power);
+            } else {
+                me.tap_timer = TAP_CROUCH;
+                me.crouch = CROUCH;
+            }
+        } else if !me.on_ground && me.wall_dir != 0.0 {
+            // wall jump: kick off the wall, refunds your air jumps
+            let kick = -me.wall_dir;
+            me.vy = -(2.0 * GRAVITY * JUMP * 0.95).sqrt();
+            me.vx = kick * WALL_KICK;
+            me.facing = kick;
+            me.air_jumps = me.kind.air_jumps();
+            w.burst(cx - kick * 30.0, cy, 8, Color::new(230, 230, 230, 220), 200.0, 0.35, 5.0, Shape::Circle, 100.0);
+        } else if !me.on_ground && me.air_jumps > 0 && me.tap_timer <= 0.0 {
+            // double jump
+            me.air_jumps -= 1;
+            me.vy = -(2.0 * GRAVITY * JUMP * 0.85).sqrt();
+            w.ring(cx, me.y + SIZE, 55.0, Color::WHITE);
+            w.burst(cx, me.y + SIZE, 8, Color::new(230, 230, 230, 200), 180.0, 0.35, 5.0, Shape::Circle, 100.0);
         }
     }
     if me.tap_timer > 0.0 {
@@ -1229,15 +1925,19 @@ fn update_player(rl: &RaylibHandle, me: &mut Player, foe: &mut Player, my_idx: u
         }
     }
 
-    // ---- loadout abilities ----
+    // ---- loadout abilities and ultimate ----
     let loadout = me.abilities;
-    if can_act && rl.is_key_pressed(me.keys.a1) && me.cd1 <= 0.0 {
+    if acting && inp.a1 && me.cd1 <= 0.0 {
         use_ability(loadout[0], me, foe, my_idx, solids, w);
         me.cd1 = loadout[0].cooldown();
     }
-    if can_act && rl.is_key_pressed(me.keys.a2) && me.cd2 <= 0.0 {
+    if acting && inp.a2 && me.cd2 <= 0.0 {
         use_ability(loadout[1], me, foe, my_idx, solids, w);
         me.cd2 = loadout[1].cooldown();
+    }
+    if acting && inp.ult && me.ult >= ULT_MAX {
+        me.ult = 0.0;
+        use_ult(me, foe, my_idx, w);
     }
     if me.slam_arm && me.vy >= 0.0 {
         me.slam_arm = false;
@@ -1254,7 +1954,7 @@ fn update_player(rl: &RaylibHandle, me: &mut Player, foe: &mut Player, my_idx: u
     // ---- melee: knife swing ----
     me.melee_cd = (me.melee_cd - dt).max(0.0);
     me.melee_t = (me.melee_t - dt).max(0.0);
-    if can_act && rl.is_key_pressed(me.keys.melee) && me.melee_cd <= 0.0 && me.melee_t <= 0.0 {
+    if acting && inp.melee && me.melee_cd <= 0.0 && me.melee_t <= 0.0 {
         me.melee_t = MELEE_TIME;
         me.melee_cd = MELEE_CD;
         me.melee_hit = false;
@@ -1268,7 +1968,8 @@ fn update_player(rl: &RaylibHandle, me: &mut Player, foe: &mut Player, my_idx: u
             let rx = if me.facing > 0.0 { me.x + SIZE } else { me.x - MELEE_REACH };
             let zone = Rectangle::new(rx, me.y - 10.0, MELEE_REACH, SIZE + 20.0);
             if overlaps(&zone, &foe.rect()) {
-                foe.hurt(MELEE_DMG, me.facing * 350.0, -180.0);
+                let dmg = me.kind.melee_dmg() * if me.over_t > 0.0 { 1.8 } else { 1.0 };
+                foe.hurt(dmg, me.facing * 350.0, -180.0);
                 me.melee_hit = true;
                 let (fx, fy) = foe.center();
                 w.burst(fx, fy, 8, Color::new(220, 240, 255, 255), 320.0, 0.25, 3.0, Shape::Streak, 0.0);
@@ -1288,7 +1989,7 @@ fn update_player(rl: &RaylibHandle, me: &mut Player, foe: &mut Player, my_idx: u
     }
 
     // ---- eyes ----
-    me.eyes = if me.crouch > 0.0 || me.hurt_t > 0.0 || me.frozen_t > 0.0 {
+    me.eyes = if me.crouch > 0.0 || me.hurt_t > 0.0 || me.frozen_t > 0.0 || me.stun_t > 0.0 {
         Eyes::Squint
     } else if !me.on_ground && me.vy < 0.0 {
         Eyes::UpWide
@@ -1307,7 +2008,7 @@ fn update_player(rl: &RaylibHandle, me: &mut Player, foe: &mut Player, my_idx: u
 
 fn emit_trail(p: &mut Player, w: &mut World, t: f32, dt: f32) {
     let style = TRAIL_STYLES[p.trail_style];
-    if style == Trail::Off {
+    if style == Trail::Off || p.dead_t > 0.0 {
         return;
     }
     let speed = (p.vx * p.vx + p.vy * p.vy).sqrt();
@@ -1383,12 +2084,28 @@ fn draw_knife(d: &mut impl RaylibDraw, px: f32, py: f32, theta: f32, flip: f32) 
     }
 }
 
-fn draw_player(d: &mut impl RaylibDraw, p: &Player) {
+fn draw_player(d: &mut impl RaylibDraw, p: &Player, t: f32) {
     let w = SIZE;
     let h = SIZE - p.crouch;
     let cx = p.x + SIZE / 2.0;
     let cy = p.y + SIZE - h / 2.0;
     let body = if p.hurt_t > 0.0 { Color::WHITE } else { p.kind.color() };
+
+    // buff auras behind the body
+    if p.power_t > 0.0 {
+        d.draw_circle(cx as i32, cy as i32, SIZE * 0.85, Color::new(255, 70, 60, 60));
+    }
+    if p.haste_t > 0.0 {
+        d.draw_circle(cx as i32, cy as i32, SIZE * 0.85, Color::new(60, 200, 255, 60));
+    }
+    if p.over_t > 0.0 {
+        d.draw_circle(cx as i32, cy as i32, SIZE * 1.0, Color::new(255, 150, 40, 90));
+    }
+    if p.ult >= ULT_MAX {
+        let pulse = 0.5 + 0.5 * (t * 8.0).sin();
+        d.draw_circle_lines(cx as i32, cy as i32, SIZE * 0.8 + 6.0 * pulse, Color::new(255, 230, 80, 220));
+    }
+
     d.draw_rectangle_pro(Rectangle::new(cx, cy, w, h), Vector2::new(w / 2.0, h / 2.0), p.rot, body);
 
     let (look_x, look_y, ew, eh) = match p.eyes {
@@ -1398,7 +2115,7 @@ fn draw_player(d: &mut impl RaylibDraw, p: &Player) {
         Eyes::UpWide => (0.0, -1.5, 3.0, 3.0),
         Eyes::Squint => (0.0, 0.0, 3.0, 1.0),
     };
-    let eye_col = if p.hurt_t > 0.0 { Color::BLACK } else { Color::WHITE };
+    let eye_col = if p.hurt_t > 0.0 { Color::BLACK } else if p.kind == Kind::Ghost { Color::new(60, 50, 90, 255) } else { Color::WHITE };
     let big = SIZE / 15.0;
     let (s, c) = p.rot.to_radians().sin_cos();
     for side in [-1.0_f32, 1.0] {
@@ -1417,6 +2134,21 @@ fn draw_player(d: &mut impl RaylibDraw, p: &Player) {
     if p.frozen_t > 0.0 {
         d.draw_rectangle_pro(Rectangle::new(cx, cy, w + 8.0, h + 8.0), Vector2::new(w / 2.0 + 4.0, h / 2.0 + 4.0), p.rot, Color::new(170, 230, 255, 160));
         d.draw_rectangle_pro(Rectangle::new(cx - 10.0, cy - 12.0, 8.0, 26.0), Vector2::new(4.0, 13.0), p.rot + 20.0, Color::new(255, 255, 255, 190));
+    }
+    if p.stun_t > 0.0 {
+        // little stars circling the head
+        for k in 0..3 {
+            let a = t * 9.0 + k as f32 * 2.09;
+            d.draw_circle((cx + a.cos() * 26.0) as i32, (p.y - 10.0 + a.sin() * 6.0) as i32, 5.0, Color::new(255, 230, 60, 255));
+        }
+    }
+    if p.block_held {
+        // guard arc in front of you; flashes white during the parry window
+        let gx = cx + p.facing * SIZE * 0.62;
+        let col = if p.parry_t > 0.0 { Color::WHITE } else { Color::new(200, 230, 255, 220) };
+        d.draw_circle(gx as i32, cy as i32, 40.0, Color::new(200, 230, 255, 50));
+        d.draw_circle_lines(gx as i32, cy as i32, 40.0, col);
+        d.draw_circle_lines(gx as i32, cy as i32, 39.0, col);
     }
     if p.melee_t > 0.0 {
         let progress = 1.0 - p.melee_t / MELEE_TIME;
@@ -1456,7 +2188,7 @@ fn draw_strikes(d: &mut impl RaylibDraw, strikes: &[Strike], t: f32) {
     for s in strikes {
         if !s.struck {
             // warning column that gets brighter until the bolt lands
-            let prog = 1.0 - s.t / STRIKE_DELAY;
+            let prog = (1.0 - s.t / STRIKE_DELAY).clamp(0.0, 1.0);
             let pulse = 0.5 + 0.5 * (t * 25.0).sin();
             let alpha = (25.0 + 110.0 * prog + 40.0 * pulse) as u8;
             d.draw_rectangle((s.x - 35.0) as i32, 0, 70, ground as i32, Color::new(255, 240, 120, alpha));
@@ -1493,16 +2225,27 @@ fn center_text(d: &mut impl RaylibDraw, s: &str, y: i32, size: i32, color: Color
     text(d, s, W / 2 - text_width(s, size) / 2, y, size, color);
 }
 
-fn draw_hud(d: &mut impl RaylibDraw, players: &[Player; 2]) {
+fn draw_hud(d: &mut impl RaylibDraw, players: &[Player; 2], mode: Mode, rd: &Round, t: f32) {
     let labels = [("F", "G"), ("COMMA", "PERIOD")];
+    let ult_keys = ["V", "R-CTRL"];
     for (i, p) in players.iter().enumerate() {
         let bar_w = 420.0;
         let x = if i == 0 { 20.0 } else { W as f32 - 20.0 - bar_w };
         d.draw_rectangle(x as i32 - 3, 17, bar_w as i32 + 6, 30, Color::DARKGRAY);
-        let fill = bar_w * p.hp / MAX_HP;
+        let fill = bar_w * (p.hp / p.max_hp).clamp(0.0, 1.0);
         let fx = if i == 0 { x } else { x + bar_w - fill };
         d.draw_rectangle(fx as i32, 20, fill as i32, 24, p.kind.color());
+        d.draw_text(&format!("{:.0}", p.hp.ceil()), x as i32 + 6, 22, 20, Color::WHITE);
         text(d, &format!("P{} {}", i + 1, p.kind.name()), x as i32, 52, 28, Color::WHITE);
+
+        // stock dots
+        if mode == Mode::Stock {
+            for k in 0..STOCKS {
+                let col = if k < rd.stocks[i] { Color::new(255, 90, 90, 255) } else { Color::new(60, 60, 60, 255) };
+                let dx = if i == 0 { x + 300.0 + k as f32 * 24.0 } else { x + 330.0 - k as f32 * 24.0 };
+                d.draw_circle(dx as i32, 66, 9.0, col);
+            }
+        }
 
         let cds = [
             (p.cd1, p.abilities[0].cooldown(), format!("{}: {}", labels[i].0, p.abilities[0].name())),
@@ -1515,6 +2258,32 @@ fn draw_hud(d: &mut impl RaylibDraw, players: &[Player; 2]) {
             let col = if *cd <= 0.0 { Color::new(40, 160, 40, 255) } else { Color::GRAY };
             d.draw_rectangle(px as i32, 84, (201.0 * ready) as i32, 28, col);
             text(d, label, px as i32 + 8, 86, 22, Color::WHITE);
+        }
+
+        // ultimate meter
+        d.draw_rectangle(x as i32 - 2, 118, 424, 18, Color::BLACK);
+        let full = p.ult >= ULT_MAX;
+        let ucol = if full { hsv(t * 300.0) } else { Color::new(230, 190, 40, 255) };
+        d.draw_rectangle(x as i32, 120, (420.0 * p.ult / ULT_MAX) as i32, 14, ucol);
+        let label = if full {
+            format!("{}: {} READY!", ult_keys[i], p.kind.ult_name())
+        } else {
+            format!("ULTIMATE {:.0}%", p.ult)
+        };
+        text(d, &label, x as i32 + 6, 118, 16, Color::WHITE);
+
+        // active buffs and combo
+        let mut by = 142;
+        if p.power_t > 0.0 {
+            text(d, &format!("POWER {:.0}s", p.power_t.ceil()), x as i32, by, 20, Color::new(255, 90, 80, 255));
+            by += 22;
+        }
+        if p.haste_t > 0.0 {
+            text(d, &format!("HASTE {:.0}s", p.haste_t.ceil()), x as i32, by, 20, Color::new(80, 210, 255, 255));
+            by += 22;
+        }
+        if rd.combo_show[i] > 0.0 && rd.combo[i] >= 2 {
+            text(d, &format!("x{} COMBO!", rd.combo[i]), x as i32, by, 30, Color::YELLOW);
         }
     }
 }
@@ -1635,7 +2404,8 @@ fn draw_scenery(d: &mut impl RaylibDraw, theme: Theme, t: f32) {
     }
 }
 
-fn draw_world(d: &mut impl RaylibDraw, theme: Theme, map: &Map, w: &World, t: f32) {
+#[allow(clippy::too_many_arguments)]
+fn draw_world(d: &mut impl RaylibDraw, theme: Theme, map: &Map, hazard: Option<Rectangle>, zone: Option<Rectangle>, w: &World, t: f32) {
     for s in &map.solids {
         let r = s.r;
         let (x, y, wd, h) = (r.x as i32, r.y as i32, r.width as i32, r.height as i32);
@@ -1663,9 +2433,9 @@ fn draw_world(d: &mut impl RaylibDraw, theme: Theme, map: &Map, w: &World, t: f3
             }
         }
     }
-    if let Some(hz) = map.hazard {
+    if let Some(hz) = hazard {
         let pulse = 0.5 + 0.5 * (t * 4.0).sin();
-        d.draw_rectangle((hz.x - 6.0) as i32, hz.y as i32 - 6, hz.width as i32 + 12, 24, Color::new(255, (90.0 + 60.0 * pulse) as u8, 20, 255));
+        d.draw_rectangle((hz.x - 6.0) as i32, hz.y as i32 - 6, hz.width as i32 + 12, hz.height as i32 + 10, Color::new(255, (90.0 + 60.0 * pulse) as u8, 20, 255));
         d.draw_rectangle(hz.x as i32, hz.y as i32 - 3, hz.width as i32, 8, Color::new(255, 220, 90, 230));
         for i in 0..8 {
             let bx = hz.x + 20.0 + i as f32 * 40.0;
@@ -1673,7 +2443,39 @@ fn draw_world(d: &mut impl RaylibDraw, theme: Theme, map: &Map, w: &World, t: f3
             d.draw_circle(bx as i32, by as i32, 3.0, Color::new(255, 200, 60, 220));
         }
     }
+    // king of the hill zone
+    if let Some(z) = zone {
+        let pulse = 0.5 + 0.5 * (t * 4.0).sin();
+        d.draw_rectangle(z.x as i32, z.y as i32, z.width as i32, z.height as i32, Color::new(255, 220, 60, (50.0 + 40.0 * pulse) as u8));
+        d.draw_rectangle_lines(z.x as i32, z.y as i32, z.width as i32, z.height as i32, Color::new(255, 230, 90, 255));
+        text(d, "HILL", (z.x + z.width / 2.0) as i32 - 30, z.y as i32 + 6, 26, Color::new(255, 240, 120, 255));
+    }
+    // meteor warnings and falling meteors
+    for m in &w.meteors {
+        if !m.falling {
+            let ground = H as f32 - FLOOR_H;
+            let prog = (1.0 - m.warn).clamp(0.0, 1.0);
+            let pulse = 0.5 + 0.5 * (t * 20.0).sin();
+            d.draw_line_ex(Vector2::new(m.tx - 300.0, -60.0), Vector2::new(m.tx, ground), 2.0, Color::new(255, 80, 60, (60.0 + 100.0 * prog) as u8));
+            d.draw_circle(m.tx as i32, ground as i32 - 2, 18.0 + 22.0 * prog, Color::new(255, 70, 50, (80.0 + 80.0 * pulse) as u8));
+            text(d, "!", m.tx as i32 - 7, ground as i32 - 70, 40, Color::new(255, 90, 60, 255));
+        } else {
+            d.draw_circle(m.x as i32, m.y as i32, 26.0, Color::new(255, 120, 30, 110));
+            d.draw_circle(m.x as i32, m.y as i32, 16.0, Color::new(90, 60, 50, 255));
+            d.draw_circle(m.x as i32 - 4, m.y as i32 - 4, 7.0, Color::new(255, 170, 60, 255));
+        }
+    }
     draw_strikes(d, &w.strikes, t);
+    // pickups bob in place
+    for pk in &w.pickups {
+        let bob = (pk.age * 4.0).sin() * 5.0;
+        let c = pk.kind.color();
+        let (px, py) = (pk.x as i32, (pk.y + bob) as i32);
+        d.draw_circle(px, py, 30.0, with_alpha(c, 70));
+        d.draw_circle(px, py, 20.0, c);
+        d.draw_circle_lines(px, py, 20.0, Color::BLACK);
+        text(d, pk.kind.label(), px - 8, py - 13, 28, Color::WHITE);
+    }
     for b in &w.projs {
         match b.kind {
             ProjKind::Bomb => {
@@ -1722,6 +2524,15 @@ fn camera_for(zoom: f32, focus: (f32, f32), weight: f32, shake: (f32, f32)) -> C
 const ROWS: usize = 5;
 const ROW_NAMES: [&str; ROWS] = ["CHARACTER", "ABILITY 1", "ABILITY 2", "TRAIL", "TRAIL COLOR"];
 
+fn respawn(p: &mut Player, setup: &Setup, x: f32, facing: f32, keys: Keys, w: &mut World) {
+    let ult = p.ult;
+    *p = Player::new(setup, x, facing, keys);
+    p.ult = ult * 0.5;
+    p.shield_t = 1.5; // spawn protection
+    w.ring(x + SIZE / 2.0, p.y + SIZE / 2.0, 120.0, Color::WHITE);
+    w.burst(x + SIZE / 2.0, p.y + SIZE / 2.0, 16, p.kind.color(), 300.0, 0.5, 6.0, Shape::Star, 0.0);
+}
+
 fn main() {
     let (mut rl, thread) = raylib::init().size(W, H).title("Pausi").build();
     rl.set_target_fps(60);
@@ -1735,6 +2546,8 @@ fn main() {
             a1: KeyboardKey::KEY_F,
             a2: KeyboardKey::KEY_G,
             melee: KeyboardKey::KEY_E,
+            block: KeyboardKey::KEY_Q,
+            ult: KeyboardKey::KEY_V,
         },
         Keys {
             left: KeyboardKey::KEY_LEFT,
@@ -1744,6 +2557,8 @@ fn main() {
             a1: KeyboardKey::KEY_COMMA,
             a2: KeyboardKey::KEY_PERIOD,
             melee: KeyboardKey::KEY_SLASH,
+            block: KeyboardKey::KEY_RIGHT_SHIFT,
+            ult: KeyboardKey::KEY_RIGHT_CONTROL,
         },
     ];
     let ready_keys = [KeyboardKey::KEY_F, KeyboardKey::KEY_L]; // select-screen ready
@@ -1769,10 +2584,13 @@ fn main() {
     // ---- match (series) state ----
     let round_options = [1u32, 3, 5, 10, 15];
     let mut rounds_idx = 1usize; // default: 3 rounds
+    let mut mode_idx = 0usize;
+    let mut cpu = false; // P2 is a CPU bot
     let mut start_theme = 0usize;
     let mut round_no = 1u32;
     let mut wins = [0u32; 2];
     let mut series_over = false;
+    let mut rd = Round::new();
 
     // ---- cinematic state ----
     let mut ko_timer = 0.0f32;
@@ -1781,6 +2599,7 @@ fn main() {
     while !rl.window_should_close() {
         let dt = rl.get_frame_time().min(0.05);
         let t = rl.get_time() as f32;
+        let mode = MODES[mode_idx];
 
         // screen effects calm down in real time
         w.fx.shake *= 0.86f32.powf(dt * 60.0);
@@ -1789,6 +2608,15 @@ fn main() {
         }
         w.fx.punch *= 0.88f32.powf(dt * 60.0);
         w.fx.flash = (w.fx.flash - dt * 2.2).max(0.0);
+        if let Some((_, _, left)) = w.banner.as_mut() {
+            *left -= dt;
+        }
+        if matches!(w.banner, Some((_, _, left)) if left <= 0.0) {
+            w.banner = None;
+        }
+        for i in 0..2 {
+            rd.combo_show[i] = (rd.combo_show[i] - dt).max(0.0);
+        }
 
         if selecting {
             // ---- loadout menus ----
@@ -1820,12 +2648,21 @@ fn main() {
                     ready[i] = !ready[i];
                 }
             }
-            if rl.is_key_pressed(KeyboardKey::KEY_M) && !(ready[0] && ready[1]) {
-                theme_idx = cycle(theme_idx, THEMES.len(), 1);
-                map = make_map(THEMES[theme_idx]);
-            }
-            if rl.is_key_pressed(KeyboardKey::KEY_N) && !(ready[0] && ready[1]) {
-                rounds_idx = cycle(rounds_idx, round_options.len(), 1);
+            let both_ready = ready[0] && (ready[1] || cpu);
+            if !both_ready {
+                if rl.is_key_pressed(KeyboardKey::KEY_M) {
+                    theme_idx = cycle(theme_idx, THEMES.len(), 1);
+                    map = make_map(THEMES[theme_idx]);
+                }
+                if rl.is_key_pressed(KeyboardKey::KEY_N) {
+                    rounds_idx = cycle(rounds_idx, round_options.len(), 1);
+                }
+                if rl.is_key_pressed(KeyboardKey::KEY_B) {
+                    mode_idx = cycle(mode_idx, MODES.len(), 1);
+                }
+                if rl.is_key_pressed(KeyboardKey::KEY_C) {
+                    cpu = !cpu;
+                }
             }
 
             // animated previews so you can see the trail you picked
@@ -1834,7 +2671,7 @@ fn main() {
                 let pv = &mut previews[i];
                 pv.apply_setup(&setups[i]);
                 pv.x = panel_x + 500.0 + (t * 1.6).sin() * 55.0;
-                pv.y = 260.0;
+                pv.y = 220.0;
                 pv.vx = (t * 1.6).cos() * 55.0 * 1.6;
                 pv.vy = 0.0;
                 pv.facing = if pv.vx >= 0.0 { 1.0 } else { -1.0 };
@@ -1843,7 +2680,7 @@ fn main() {
             }
             update_particles(&mut w.parts, dt);
 
-            if ready[0] && ready[1] {
+            if both_ready {
                 players = [
                     Player::new(&setups[0], map.spawns[0], 1.0, keys[0]),
                     Player::new(&setups[1], map.spawns[1], -1.0, keys[1]),
@@ -1855,6 +2692,7 @@ fn main() {
                 wins = [0, 0];
                 series_over = false;
                 ko_timer = 0.0;
+                rd = Round::new();
                 selecting = false;
             }
         } else {
@@ -1873,10 +2711,34 @@ fn main() {
             if result.is_none() || ko_active {
                 if dt_sim > 0.0 {
                     let hp_before = [players[0].hp, players[1].hp];
+                    let live = result.is_none();
+                    if live {
+                        rd.time += dt_sim;
+                    }
+
+                    // ---- respawns (stock and hill modes) ----
                     for i in 0..2 {
+                        if live && players[i].dead_t > 0.0 {
+                            players[i].dead_t -= dt_sim;
+                            if players[i].dead_t <= 0.0 {
+                                let facing = if i == 0 { 1.0 } else { -1.0 };
+                                respawn(&mut players[i], &setups[i], map.spawns[i], facing, keys[i], &mut w);
+                            }
+                        }
+                    }
+
+                    // ---- inputs: keyboard or CPU ----
+                    let inputs = [
+                        read_input(&rl, &keys[0]),
+                        if cpu { bot_input(&players[1], &players[0], &mut w.rng) } else { read_input(&rl, &keys[1]) },
+                    ];
+                    for i in 0..2 {
+                        if players[i].dead_t > 0.0 {
+                            continue;
+                        }
                         let (a, b) = players.split_at_mut(1);
                         let (me, foe) = if i == 0 { (&mut a[0], &mut b[0]) } else { (&mut b[0], &mut a[0]) };
-                        update_player(&rl, me, foe, i, &map.solids, &mut w, dt_sim);
+                        update_player(&inputs[i], me, foe, i, &map.solids, &mut w, dt_sim);
                     }
                     collide_players(&mut players, &map.solids);
                     for p in players.iter_mut() {
@@ -1888,10 +2750,22 @@ fn main() {
                         slam_land(me, foe, &mut w);
                     }
 
-                    // lava hurts
-                    if let Some(hz) = map.hazard {
+                    // ---- map events ----
+                    if live {
+                        update_events(THEMES[theme_idx], &mut rd, &mut players, &map.solids, &mut w, dt_sim);
+                        update_pickups(&mut players, &map.solids, &mut rd, &mut w, dt_sim);
+                    }
+
+                    // lava hurts (and surges up in the volcano)
+                    let rise = if THEMES[theme_idx] == Theme::Volcano {
+                        90.0 * ease((rd.time * 0.5).sin().max(0.0))
+                    } else {
+                        0.0
+                    };
+                    let hazard_now = map.hazard.map(|hz| Rectangle::new(hz.x, hz.y - rise, hz.width, hz.height + rise));
+                    if let Some(hz) = hazard_now {
                         for p in players.iter_mut() {
-                            if overlaps(&p.rect(), &hz) {
+                            if p.dead_t <= 0.0 && overlaps(&p.rect(), &hz) {
                                 p.hp = (p.hp - LAVA_DPS * dt_sim).max(0.0);
                                 p.hurt_t = 0.1;
                                 if w.rng.next() < 0.5 {
@@ -1912,64 +2786,198 @@ fn main() {
                     }
                     update_particles(&mut w.parts, dt_sim);
 
-                    // ---- impact feel: every real hit shakes, freezes and sparks ----
+                    // ---- parries and blocks ----
+                    for i in 0..2 {
+                        let (px, py) = players[i].center();
+                        if players[i].parried {
+                            players[i].parried = false;
+                            let att = 1 - i;
+                            players[att].stun_t = 0.8;
+                            players[att].vx = 0.0;
+                            players[i].ult = (players[i].ult + 20.0).min(ULT_MAX);
+                            w.ring(px, py, 160.0, Color::WHITE);
+                            w.ring(px, py, 100.0, Color::new(255, 230, 90, 255));
+                            w.burst(px, py, 20, Color::WHITE, 500.0, 0.5, 7.0, Shape::Star, 0.0);
+                            w.fx.hitstop = w.fx.hitstop.max(0.18);
+                            w.fx.flash = w.fx.flash.max(0.35);
+                            w.shake(12.0);
+                            w.banner = Some(("PARRY!".to_string(), Color::WHITE, 0.7));
+                        }
+                        if players[i].blocked {
+                            players[i].blocked = false;
+                            let f = players[i].facing;
+                            w.burst(px + f * 40.0, py, 10, Color::new(200, 230, 255, 255), 350.0, 0.3, 4.0, Shape::Streak, 0.0);
+                            w.ring(px + f * 40.0, py, 50.0, Color::new(200, 230, 255, 255));
+                            w.shake(4.0);
+                        }
+                    }
+
+                    // ---- impact feel and the combo / ultimate economy ----
                     for i in 0..2 {
                         let drop = hp_before[i] - players[i].hp;
-                        if drop >= 3.0 && players[i].hp < hp_before[i] && players[i].hurt_t > 0.2 {
+                        if drop >= 3.0 && players[i].hurt_t > 0.2 {
+                            let att = 1 - i;
+                            if rd.combo_t[att] > 0.0 {
+                                rd.combo[att] += 1;
+                            } else {
+                                rd.combo[att] = 1;
+                            }
+                            rd.combo_t[att] = COMBO_WINDOW;
+                            rd.combo_show[att] = 1.6;
+                            let mut bonus = ((rd.combo[att] as f32 - 1.0) * 0.1).min(0.5);
+                            if players[att].power_t > 0.0 {
+                                bonus += 0.5;
+                            }
+                            let extra = drop * bonus;
+                            if extra > 0.0 {
+                                players[i].hp = (players[i].hp - extra).max(0.0);
+                            }
+                            let total = drop + extra;
+                            players[att].ult = (players[att].ult + total * 1.2).min(ULT_MAX);
+                            players[i].ult = (players[i].ult + total * 0.6).min(ULT_MAX);
+                            if total >= 18.0 && !players[i].block_held {
+                                players[i].stun_t = players[i].stun_t.max(0.3); // heavy hit stagger
+                            }
                             let (px, py) = players[i].center();
-                            w.shake((5.0 + drop * 0.6).min(24.0));
-                            w.fx.hitstop = w.fx.hitstop.max((0.03 + drop * 0.003).min(0.12));
-                            w.fx.punch = w.fx.punch.max((0.02 + drop * 0.002).min(0.08));
-                            if drop >= 18.0 {
+                            w.shake((5.0 + total * 0.6).min(24.0));
+                            w.fx.hitstop = w.fx.hitstop.max((0.03 + total * 0.003).min(0.12));
+                            w.fx.punch = w.fx.punch.max((0.02 + total * 0.002).min(0.08));
+                            if total >= 18.0 {
                                 w.fx.flash = w.fx.flash.max(0.25);
                             }
-                            w.burst(px, py, 10 + drop as usize, Color::WHITE, 420.0, 0.35, 4.0, Shape::Streak, 0.0);
+                            w.burst(px, py, 10 + total as usize, Color::WHITE, 420.0, 0.35, 4.0, Shape::Streak, 0.0);
                             w.burst(px, py, 6, players[i].kind.color(), 300.0, 0.5, 9.0, Shape::Square, 500.0);
-                            w.ring(px, py, 60.0 + drop * 2.0, Color::WHITE);
+                            w.ring(px, py, 60.0 + total * 2.0, Color::WHITE);
+                        }
+                    }
+                    for i in 0..2 {
+                        rd.combo_t[i] = (rd.combo_t[i] - dt_sim).max(0.0);
+                    }
+
+                    // ---- stock / hill deaths: respawn instead of ending the round ----
+                    if live && (mode == Mode::Stock || mode == Mode::Hill) {
+                        for i in 0..2 {
+                            if players[i].hp <= 0.0 && players[i].dead_t <= 0.0 {
+                                players[i].dead_t = RESPAWN_TIME;
+                                let (px, py) = players[i].center();
+                                let col = players[i].kind.color();
+                                w.burst(px, py, 30, col, 550.0, 0.9, 12.0, Shape::Square, 500.0);
+                                w.burst(px, py, 14, Color::WHITE, 600.0, 0.5, 6.0, Shape::Star, 0.0);
+                                w.ring(px, py, 220.0, Color::WHITE);
+                                w.shake(16.0);
+                                w.fx.flash = w.fx.flash.max(0.3);
+                                if mode == Mode::Stock {
+                                    rd.stocks[i] -= 1;
+                                } else {
+                                    rd.hill[1 - i] += 5.0;
+                                }
+                            }
+                        }
+                    }
+
+                    // ---- king of the hill: scoring and the moving zone ----
+                    if live && mode == Mode::Hill {
+                        rd.zone_t -= dt_sim;
+                        if rd.zone_t <= 0.0 {
+                            rd.zone_t = HILL_MOVE;
+                            rd.zone_idx = (rd.zone_idx + 1) % map.zones.len();
+                            let z = map.zones[rd.zone_idx];
+                            w.ring(z.x + z.width / 2.0, z.y + z.height / 2.0, 140.0, Color::new(255, 230, 90, 255));
+                        }
+                        let zone = map.zones[rd.zone_idx];
+                        let inside = [
+                            players[0].dead_t <= 0.0 && overlaps(&players[0].rect(), &zone),
+                            players[1].dead_t <= 0.0 && overlaps(&players[1].rect(), &zone),
+                        ];
+                        if inside[0] && !inside[1] {
+                            rd.hill[0] += dt_sim;
+                        } else if inside[1] && !inside[0] {
+                            rd.hill[1] += dt_sim;
                         }
                     }
 
                     // ---- end of round: KO cinematic and tally ----
                     if result.is_none() {
                         let dead = [players[0].hp <= 0.0, players[1].hp <= 0.0];
-                        let winner: Option<Option<usize>> = match dead {
-                            [true, true] => Some(None),
-                            [true, false] => Some(Some(1)),
-                            [false, true] => Some(Some(0)),
-                            _ => None,
+                        let by_hp = |a: f32, b: f32| -> Option<usize> {
+                            if (a - b).abs() < 0.01 {
+                                None
+                            } else if a > b {
+                                Some(0)
+                            } else {
+                                Some(1)
+                            }
                         };
-                        if let Some(win) = winner {
+                        // (winner, was it a knockout?)
+                        let mut end: Option<(Option<usize>, bool)> = None;
+                        match mode {
+                            Mode::Classic | Mode::Timed => {
+                                end = match dead {
+                                    [true, true] => Some((None, true)),
+                                    [true, false] => Some((Some(1), true)),
+                                    [false, true] => Some((Some(0), true)),
+                                    _ => None,
+                                };
+                                if end.is_none() && mode == Mode::Timed && rd.time >= TIME_LIMIT {
+                                    end = Some((by_hp(players[0].hp, players[1].hp), false));
+                                }
+                            }
+                            Mode::Stock => {
+                                if rd.stocks[0] <= 0 || rd.stocks[1] <= 0 {
+                                    let win = if rd.stocks[0] <= 0 && rd.stocks[1] <= 0 {
+                                        None
+                                    } else if rd.stocks[0] <= 0 {
+                                        Some(1)
+                                    } else {
+                                        Some(0)
+                                    };
+                                    end = Some((win, true));
+                                }
+                            }
+                            Mode::Hill => {
+                                if rd.hill[0] >= HILL_TARGET || rd.hill[1] >= HILL_TARGET || rd.time >= HILL_TIME {
+                                    end = Some((by_hp(rd.hill[0], rd.hill[1]), false));
+                                }
+                            }
+                        }
+                        if let Some((win, ko)) = end {
                             if let Some(i) = win {
                                 wins[i] += 1;
                             }
                             series_over = round_no >= round_options[rounds_idx];
+                            let reason = if ko { "" } else if mode == Mode::Hill { " (HILL POINTS)" } else { " (TIME UP)" };
                             result = Some(match win {
-                                Some(i) => format!("P{} ({}) WINS THE ROUND", i + 1, players[i].kind.name()),
-                                None => "ROUND DRAWN".to_string(),
+                                Some(i) => format!("P{} ({}) WINS THE ROUND{}", i + 1, players[i].kind.name(), reason),
+                                None => format!("ROUND DRAWN{}", reason),
                             });
-                            ko_timer = KO_TIME;
                             w.fx.flash = 0.9;
                             w.shake(26.0);
                             w.fx.hitstop = 0.18;
-                            // the loser(s) burst apart
-                            let mut fx = 0.0;
-                            let mut fy = 0.0;
-                            let mut n = 0.0;
-                            for i in 0..2 {
-                                if dead[i] {
-                                    let (px, py) = players[i].center();
-                                    let col = players[i].kind.color();
-                                    w.burst(px, py, 36, col, 600.0, 1.1, 14.0, Shape::Square, 500.0);
-                                    w.burst(px, py, 20, Color::WHITE, 700.0, 0.6, 7.0, Shape::Star, 0.0);
-                                    w.burst(px, py, 20, Color::WHITE, 800.0, 0.5, 3.0, Shape::Streak, 0.0);
-                                    w.ring(px, py, 260.0, Color::WHITE);
-                                    w.ring(px, py, 170.0, col);
-                                    fx += px;
-                                    fy += py;
-                                    n += 1.0;
+                            if ko {
+                                ko_timer = KO_TIME;
+                                // the loser(s) burst apart
+                                let mut fx = 0.0;
+                                let mut fy = 0.0;
+                                let mut n = 0.0;
+                                for i in 0..2 {
+                                    if dead[i] || (mode == Mode::Stock && rd.stocks[i] <= 0) {
+                                        players[i].hp = 0.0;
+                                        let (px, py) = players[i].center();
+                                        let col = players[i].kind.color();
+                                        w.burst(px, py, 36, col, 600.0, 1.1, 14.0, Shape::Square, 500.0);
+                                        w.burst(px, py, 20, Color::WHITE, 700.0, 0.6, 7.0, Shape::Star, 0.0);
+                                        w.burst(px, py, 20, Color::WHITE, 800.0, 0.5, 3.0, Shape::Streak, 0.0);
+                                        w.ring(px, py, 260.0, Color::WHITE);
+                                        w.ring(px, py, 170.0, col);
+                                        fx += px;
+                                        fy += py;
+                                        n += 1.0;
+                                    }
+                                }
+                                if n > 0.0 {
+                                    ko_focus = (fx / n, fy / n);
                                 }
                             }
-                            ko_focus = (fx / n, fy / n);
                         }
                     }
                 }
@@ -1997,6 +3005,7 @@ fn main() {
                     ];
                     w.clear();
                     result = None;
+                    rd = Round::new();
                 }
             }
         }
@@ -2008,22 +3017,26 @@ fn main() {
 
         if selecting {
             draw_scenery(&mut d, theme, t);
-            draw_world(&mut d, theme, &map, &World::new(), t);
-            center_text(&mut d, "PAUSI", 14, 60, Color::WHITE);
+            draw_world(&mut d, theme, &map, map.hazard, None, &World::new(), t);
+            center_text(&mut d, "PAUSI", 8, 56, Color::WHITE);
             center_text(
                 &mut d,
                 &format!("STARTING MAP: {}  ({})   - press M to change", theme.name(), theme.blurb()),
-                84,
-                24,
+                70,
+                22,
                 Color::YELLOW,
             );
 
             for i in 0..2 {
                 let px = 40 + i as i32 * 640;
-                let py = 130;
-                d.draw_rectangle(px, py, 600, 440, Color::new(0, 0, 0, 165));
-                d.draw_rectangle_lines(px, py, 600, 440, Color::WHITE);
-                text(&mut d, &format!("PLAYER {}", i + 1), px + 16, py + 10, 30, previews[i].kind.color());
+                let py = 100;
+                d.draw_rectangle(px, py, 600, 460, Color::new(0, 0, 0, 170));
+                d.draw_rectangle_lines(px, py, 600, 460, Color::WHITE);
+                let label = if i == 1 && cpu { "PLAYER 2 (CPU)".to_string() } else { format!("PLAYER {}", i + 1) };
+                text(&mut d, &label, px + 16, py + 8, 28, previews[i].kind.color());
+                if ready[i] || (i == 1 && cpu) {
+                    text(&mut d, "READY!", px + 440, py + 8, 30, Color::LIME);
+                }
 
                 let s = &setups[i];
                 let values = [
@@ -2034,68 +3047,123 @@ fn main() {
                     TRAIL_COLOR_NAMES[s.color],
                 ];
                 for r in 0..ROWS {
-                    let ry = py + 60 + r as i32 * 48;
+                    let ry = py + 48 + r as i32 * 44;
                     let active = row[i] == r && !ready[i];
                     if active {
-                        d.draw_rectangle(px + 8, ry - 4, 584, 40, Color::new(255, 255, 255, 60));
+                        d.draw_rectangle(px + 8, ry - 4, 584, 38, Color::new(255, 255, 255, 60));
                     }
                     text(&mut d, ROW_NAMES[r], px + 20, ry, 24, Color::WHITE);
                     let val = if active { format!("<  {}  >", values[r]) } else { values[r].to_string() };
                     text(&mut d, &val, px + 190, ry, 26, if active { Color::YELLOW } else { Color::LIGHTGRAY });
                 }
 
+                let kind = KINDS[s.kind];
                 let ks = if i == 0 { ("F", "G") } else { ("COMMA", "PERIOD") };
                 let a1 = ABILITIES[s.abil[0]];
                 let a2 = ABILITIES[s.abil[1]];
-                text(&mut d, &format!("{}: {} - {}", ks.0, a1.name(), a1.blurb()), px + 20, py + 310, 20, Color::WHITE);
-                text(&mut d, &format!("{}: {} - {}", ks.1, a2.name(), a2.blurb()), px + 20, py + 340, 20, Color::WHITE);
-                let knife = if i == 0 { "E" } else { "SLASH" };
-                text(&mut d, &format!("{}: KNIFE - melee swing, 10 dmg, no cooldown", knife), px + 20, py + 370, 20, Color::WHITE);
-                if ready[i] {
-                    text(&mut d, "READY!", px + 440, py + 400, 32, Color::LIME);
-                }
+                let by = py + 276;
+                text(&mut d, &format!("{}: {} - {}", ks.0, a1.name(), a1.blurb()), px + 20, by, 20, Color::WHITE);
+                text(&mut d, &format!("{}: {} - {}", ks.1, a2.name(), a2.blurb()), px + 20, by + 26, 20, Color::WHITE);
+                let (knife, block, ult) = if i == 0 { ("E", "Q", "V") } else { ("SLASH", "R-SHIFT", "R-CTRL") };
+                text(&mut d, &format!("{}: KNIFE   {}: BLOCK (tap = parry)", knife, block), px + 20, by + 52, 20, Color::WHITE);
+                text(&mut d, &format!("{}: ULT {} - {}", ult, kind.ult_name(), kind.ult_blurb()), px + 20, by + 78, 20, Color::new(255, 220, 90, 255));
+                text(&mut d, kind.passive(), px + 20, by + 104, 20, Color::new(150, 255, 170, 255));
+                text(&mut d, &format!("also: W/UP jump, again = double jump, jump on walls"), px + 20, by + 130, 18, Color::LIGHTGRAY);
             }
             draw_particles(&mut d, &w.parts);
             for i in 0..2 {
-                draw_player(&mut d, &previews[i]);
+                draw_player(&mut d, &previews[i], t);
             }
-            text(&mut d, "P1: W/S pick row  A/D change  F ready", 40, 585, 24, Color::YELLOW);
-            text(&mut d, "P2: Up/Down pick row  Left/Right change  L ready", 640, 585, 24, Color::YELLOW);
+            text(&mut d, "P1: W/S pick row  A/D change  F ready", 40, 572, 24, Color::YELLOW);
+            text(&mut d, "P2: Up/Down pick row  Left/Right change  L ready", 640, 572, 24, Color::YELLOW);
             center_text(
                 &mut d,
-                &format!("ROUNDS: {}   (press N to change - every round switches to the next map)", round_options[rounds_idx]),
-                622,
+                &format!(
+                    "ROUNDS: {} (N)    MODE: {} (B)    P2: {} (C)",
+                    round_options[rounds_idx],
+                    mode.name(),
+                    if cpu { "CPU" } else { "HUMAN" }
+                ),
+                604,
                 26,
                 Color::WHITE,
             );
-            center_text(&mut d, "Both players ready = fight!", 658, 24, Color::LIME);
+            center_text(&mut d, mode.blurb(), 636, 22, Color::LIGHTGRAY);
+            center_text(&mut d, "Every round switches to the next map. Both ready = fight!", 664, 22, Color::LIME);
         } else {
             // ---- the cinematic camera: shake, zoom punch, KO zoom ----
             let ko_prog = if ko_timer > 0.0 { ease(1.0 - ko_timer / KO_TIME) } else { 0.0 };
             let zoom = 1.0 + w.fx.punch + 0.45 * ko_prog;
             let shake = (w.rng.range(-1.0, 1.0) * w.fx.shake, w.rng.range(-1.0, 1.0) * w.fx.shake);
             let cam = camera_for(zoom, ko_focus, ko_prog, shake);
+            let rise = if theme == Theme::Volcano { 90.0 * ease((rd.time * 0.5).sin().max(0.0)) } else { 0.0 };
+            let hazard_now = map.hazard.map(|hz| Rectangle::new(hz.x, hz.y - rise, hz.width, hz.height + rise));
+            let zone = if mode == Mode::Hill { Some(map.zones[rd.zone_idx]) } else { None };
             {
                 let mut m = d.begin_mode2D(cam);
                 draw_scenery(&mut m, theme, t);
-                draw_world(&mut m, theme, &map, &w, t);
+                draw_world(&mut m, theme, &map, hazard_now, zone, &w, t);
                 draw_particles(&mut m, &w.parts);
                 for p in players.iter() {
-                    if p.hp > 0.0 {
-                        draw_player(&mut m, p);
+                    if p.hp > 0.0 && p.dead_t <= 0.0 {
+                        draw_player(&mut m, p, t);
                     }
                 }
             }
 
-            draw_hud(&mut d, &players);
+            draw_hud(&mut d, &players, mode, &rd, t);
             // round counter and running tally, top center
             center_text(&mut d, &format!("ROUND {} / {}", round_no, round_options[rounds_idx]), 12, 24, Color::WHITE);
             center_text(&mut d, &format!("{}  -  {}", wins[0], wins[1]), 42, 44, Color::YELLOW);
-            center_text(&mut d, theme.name(), 92, 20, Color::LIGHTGRAY);
-            let p1 = "P1: A/D move  W jump  S charge  F/G abilities  E knife";
-            let p2 = "P2: arrows  COMMA / PERIOD abilities  SLASH knife";
-            text(&mut d, p1, 15, H - 30, 20, Color::WHITE);
-            text(&mut d, p2, W - text_width(p2, 20) - 15, H - 30, 20, Color::WHITE);
+            center_text(&mut d, &format!("{} - {}", theme.name(), mode.name()), 92, 18, Color::LIGHTGRAY);
+            match mode {
+                Mode::Timed => {
+                    let left = (TIME_LIMIT - rd.time).max(0.0);
+                    let col = if left < 10.0 { Color::new(255, 90, 80, 255) } else { Color::WHITE };
+                    center_text(&mut d, &format!("{:.0}", left.ceil()), 118, 40, col);
+                }
+                Mode::Hill => {
+                    let left = (HILL_TIME - rd.time).max(0.0);
+                    center_text(&mut d, &format!("HILL  {:.0}  -  {:.0}   ({:.0}s)", rd.hill[0], rd.hill[1], left.ceil()), 118, 26, Color::new(255, 230, 90, 255));
+                    center_text(&mut d, &format!("first to {:.0}", HILL_TARGET), 148, 18, Color::LIGHTGRAY);
+                }
+                _ => {}
+            }
+            if rd.wind_warn {
+                center_text(&mut d, "WIND INCOMING!", 150, 28, Color::WHITE);
+            } else if rd.wind != 0.0 {
+                let arrow = if rd.wind > 0.0 { "WIND  >>>" } else { "<<<  WIND" };
+                center_text(&mut d, arrow, 150, 28, Color::WHITE);
+            }
+            if theme == Theme::Volcano && rise > 5.0 {
+                center_text(&mut d, "LAVA SURGE!", 176, 28, Color::new(255, 130, 40, 255));
+            }
+
+            // two lines of controls on each side
+            text(&mut d, "P1: A/D move  W jump (again = double, walls too)  S charge", 15, H - 56, 20, Color::WHITE);
+            text(&mut d, "F/G abilities  E knife  Q block  V ultimate", 15, H - 30, 20, Color::WHITE);
+            let p2a = "P2: arrows move/jump/charge";
+            let p2b = "COMMA/PERIOD abilities  SLASH knife  R-SHIFT block  R-CTRL ult";
+            text(&mut d, p2a, W - text_width(p2a, 20) - 15, H - 56, 20, Color::WHITE);
+            text(&mut d, p2b, W - text_width(p2b, 20) - 15, H - 30, 20, Color::WHITE);
+
+            // respawn countdowns
+            for i in 0..2 {
+                if players[i].dead_t > 0.0 && result.is_none() {
+                    let x = if i == 0 { W / 4 } else { 3 * W / 4 };
+                    let s = format!("P{} RESPAWN {:.1}", i + 1, players[i].dead_t);
+                    text(&mut d, &s, x - text_width(&s, 28) / 2, H / 2, 28, Color::WHITE);
+                }
+            }
+
+            // ---- big ultimate / parry banner ----
+            if let Some((name, col, left)) = &w.banner {
+                let a = (left / 0.4).clamp(0.0, 1.0);
+                let size = 70;
+                let bw = text_width(name, size);
+                d.draw_rectangle(0, 250, W, 100, Color::new(0, 0, 0, (150.0 * a) as u8));
+                text(&mut d, name, W / 2 - bw / 2, 265, size, with_alpha(*col, (255.0 * a) as u8));
+            }
 
             // ---- KO cinematic: letterbox bars + big K.O. text ----
             if ko_timer > 0.0 {
@@ -2112,7 +3180,7 @@ fn main() {
             if ko_timer <= 0.0 {
                 if let Some(msg) = &result {
                     d.draw_rectangle(0, 190, W, 260, Color::new(0, 0, 0, 150));
-                    center_text(&mut d, msg, 205, 56, Color::YELLOW);
+                    center_text(&mut d, msg, 205, 50, Color::YELLOW);
                     center_text(&mut d, &format!("TALLY   P1 {}  -  {} P2", wins[0], wins[1]), 285, 40, Color::WHITE);
                     if series_over {
                         let final_text = if wins[0] > wins[1] {
