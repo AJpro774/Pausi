@@ -9,7 +9,7 @@ const ACCEL: f32 = TOP_SPEED / 0.25; // reach top speed in 250ms
 const ICE: f32 = 400.0; // slide after letting go
 const JUMP: f32 = 200.0; // normal jump height in pixels
 const MAX_CHARGE: f32 = 3.5; // full charge = 3.5x jump
-const GRAVITY: f32 = 250.0;
+const GRAVITY: f32 = 800.0; // higher = snappier, lower = floatier (was 250)
 const TAP_CROUCH: f32 = 0.15;
 const CROUCH: f32 = 5.0;
 
