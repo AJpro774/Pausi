@@ -4,6 +4,14 @@
 
 Written in Rust with [raylib](https://www.raylib.com/). Everything (art, particles, scenery, cutscenes) is drawn in code, so there are no asset files.
 
+## How this happened
+
+This started as a small coding side project for school: a single orange square that could roll around and jump.
+
+Then I got sidetracked, and for no reason whatsoever decided to turn it into a PvP game. Nobody asked for this. There was no plan, no deadline and no good excuse. The square got a friend, the friend got a knife, and it just kept going: abilities, ultimates, eight maps, victory cutscenes where the winner stabs a knife into the ground and fires every ability at once, and a mode where two CPUs fight each other so I can watch.
+
+The school project is (probably) still due. The duel game, however, is excellent.
+
 ## Features
 
 - **Momentum movement** with sliding, charged jumps, wall slides, wall jumps and double jumps.
