@@ -1718,19 +1718,32 @@ fn update_events(theme: Theme, rd: &mut Round, players: &mut [Player; 2], solids
 fn update_pickups(players: &mut [Player; 2], solids: &[Solid], rd: &mut Round, w: &mut World, dt: f32) {
     rd.pickup_t -= dt;
     if rd.pickup_t <= 0.0 && w.pickups.len() < 2 {
-        rd.pickup_t = w.rng.range(8.0, 11.0);
-        let si = (w.rng.next() * solids.len() as f32) as usize % solids.len();
-        let r = solids[si].r;
-        if r.width >= 70.0 {
+        // try a few random spots on top of blocks; only accept one that is
+        // completely out in the open (not inside or touching any wall/block)
+        for _ in 0..30 {
+            let si = (w.rng.next() * solids.len() as f32) as usize % solids.len();
+            let r = solids[si].r;
+            if r.width < 70.0 {
+                continue;
+            }
             let x = r.x + w.rng.range(30.0, r.width - 30.0);
+            let y = r.y - 32.0;
+            let area = Rectangle::new(x - 28.0, y - 28.0, 56.0, 56.0 - 2.0); // sits just above the surface
+            let blocked = solids.iter().any(|s| overlaps(&area, &s.r));
+            let too_close = w.pickups.iter().any(|p| (p.x - x).abs() < 160.0);
+            if blocked || too_close || x < 40.0 || x > W as f32 - 40.0 {
+                continue;
+            }
+            rd.pickup_t = w.rng.range(8.0, 11.0);
             let kind = match (w.rng.next() * 4.0) as i32 {
                 0 => PickKind::Health,
                 1 => PickKind::Power,
                 2 => PickKind::Haste,
                 _ => PickKind::Reset,
             };
-            w.ring(x, r.y - 30.0, 40.0, kind.color());
-            w.pickups.push(Pickup { x, y: r.y - 30.0, kind, age: 0.0 });
+            w.ring(x, y, 40.0, kind.color());
+            w.pickups.push(Pickup { x, y, kind, age: 0.0 });
+            break;
         }
     }
     let pickups = std::mem::take(&mut w.pickups);
