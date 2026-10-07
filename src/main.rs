@@ -1042,7 +1042,7 @@ fn center_text(d: &mut impl RaylibDraw, s: &str, y: i32, size: i32, color: Color
 }
 
 fn draw_hud(d: &mut impl RaylibDraw, players: &[Player; 2]) {
-    let labels = [("F", "G"), (",", ".")];
+    let labels = [("F", "G"), ("COMMA", "PERIOD")];
     for (i, p) in players.iter().enumerate() {
         let bar_w = 420.0;
         let x = if i == 0 { 20.0 } else { W as f32 - 20.0 - bar_w };
@@ -1529,12 +1529,12 @@ fn main() {
                     text(&mut d, &val, px + 190, ry, 26, if active { Color::YELLOW } else { Color::LIGHTGRAY });
                 }
 
-                let ks = if i == 0 { ("F", "G") } else { (",", ".") };
+                let ks = if i == 0 { ("F", "G") } else { ("COMMA", "PERIOD") };
                 let a1 = ABILITIES[s.abil[0]];
                 let a2 = ABILITIES[s.abil[1]];
                 text(&mut d, &format!("{}: {} - {}", ks.0, a1.name(), a1.blurb()), px + 20, py + 310, 22, Color::WHITE);
                 text(&mut d, &format!("{}: {} - {}", ks.1, a2.name(), a2.blurb()), px + 20, py + 340, 22, Color::WHITE);
-                let knife = if i == 0 { "E" } else { "/" };
+                let knife = if i == 0 { "E" } else { "SLASH" };
                 text(&mut d, &format!("{}: KNIFE - melee swing, 10 dmg, no cooldown", knife), px + 20, py + 370, 22, Color::WHITE);
                 if ready[i] {
                     text(&mut d, "READY!", px + 440, py + 400, 32, Color::LIME);
@@ -1572,9 +1572,9 @@ fn main() {
             center_text(&mut d, &format!("{}  -  {}", wins[0], wins[1]), 42, 44, Color::YELLOW);
             center_text(&mut d, theme.name(), 92, 20, Color::LIGHTGRAY);
             let p1 = "P1: A/D move  W jump  S charge  F/G abilities  E knife";
-            let p2 = "P2: arrows  , . abilities  / knife";
-            text(&mut d, p1, 15, H - 32, 22, Color::WHITE);
-            text(&mut d, p2, W - text_width(p2, 22) - 15, H - 32, 22, Color::WHITE);
+            let p2 = "P2: arrows  COMMA / PERIOD abilities  SLASH knife";
+            text(&mut d, p1, 15, H - 30, 20, Color::WHITE);
+            text(&mut d, p2, W - text_width(p2, 20) - 15, H - 30, 20, Color::WHITE);
             if let Some(msg) = &result {
                 d.draw_rectangle(0, 190, W, 260, Color::new(0, 0, 0, 150));
                 center_text(&mut d, msg, 205, 56, Color::YELLOW);
