@@ -516,12 +516,11 @@ fn collide_players(pl: &mut [Player; 2], solids: &[Solid]) {
     let oy = (a.y + SIZE).min(b.y + SIZE) - a.y.max(b.y);
     if oy < ox {
         let (up, low) = if a.y < b.y { (a, b) } else { (b, a) };
+        // the top square rides on the bottom one; the bottom one is never
+        // stopped, so jumps, hops and leaps still work with someone on your head
         up.y = low.y - SIZE;
-        if up.vy >= 0.0 {
-            up.vy = 0.0;
-            up.on_ground = true;
-        }
-        low.vy = low.vy.max(0.0);
+        up.vy = low.vy;
+        up.on_ground = true;
     } else {
         let push = ox / 2.0 + 0.5;
         if a.x + SIZE / 2.0 < b.x + SIZE / 2.0 {
@@ -751,16 +750,8 @@ fn update_player(
     if me.dash_t > 0.0 && !me.dash_hit && overlaps(&me.rect(), &foe.rect()) {
         foe.hurt(15.0, me.facing * 600.0, -250.0);
         me.dash_hit = true;
+        me.dash_t = 0.0; // dash ends on impact so you don't keep shoving them
         me.vx *= 0.3;
-    }
-    if me.slam && me.on_ground {
-        me.slam = false;
-        let (mx, _) = me.center();
-        let (fx, _) = foe.center();
-        booms.push(Boom { x: mx, y: me.y + SIZE, r: 250.0, t: 0.0 });
-        if (fx - mx).abs() < 250.0 && foe.y + SIZE >= me.y + SIZE - 40.0 {
-            foe.hurt(20.0, (fx - mx).signum() * 500.0, -350.0);
-        }
     }
 
     // ---- eyes ----
@@ -775,6 +766,23 @@ fn update_player(
     } else {
         Eyes::Forward
     };
+}
+
+// runs AFTER collisions are resolved, so landing on the other square counts too
+fn slam_land(me: &mut Player, foe: &mut Player, booms: &mut Vec<Boom>) {
+    if !(me.slam && me.on_ground) {
+        return;
+    }
+    me.slam = false;
+    let (mx, _) = me.center();
+    let (fx, _) = foe.center();
+    booms.push(Boom { x: mx, y: me.y + SIZE, r: 250.0, t: 0.0 });
+    // hits if they're near and on the ground (or you landed right on them)
+    let landed_on_foe = (foe.y - (me.y + SIZE)).abs() < 2.0 && (fx - mx).abs() < SIZE;
+    if (fx - mx).abs() < 250.0 && (landed_on_foe || foe.y + SIZE >= me.y + SIZE - 40.0) {
+        let dir = if (fx - mx).abs() < 1.0 { me.facing } else { (fx - mx).signum() };
+        foe.hurt(20.0, dir * 500.0, -350.0);
+    }
 }
 
 fn explode(players: &mut [Player; 2], owner: usize, cx: f32, cy: f32, booms: &mut Vec<Boom>) {
@@ -1368,6 +1376,11 @@ fn main() {
                     update_player(&rl, me, foe, i, &map.solids, &mut bombs, &mut booms, dt);
                 }
                 collide_players(&mut players, &map.solids);
+                for i in 0..2 {
+                    let (a, b) = players.split_at_mut(1);
+                    let (me, foe) = if i == 0 { (&mut a[0], &mut b[0]) } else { (&mut b[0], &mut a[0]) };
+                    slam_land(me, foe, &mut booms);
+                }
 
                 // lava hurts
                 if let Some(hz) = map.hazard {
