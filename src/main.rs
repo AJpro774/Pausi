@@ -3655,7 +3655,8 @@ fn main() {
     let round_options = [1u32, 3, 5, 10, 15];
     let mut rounds_idx = 1usize; // default: 3 rounds
     let mut mode_idx = 0usize;
-    let mut cpu = false; // P2 is a CPU bot
+    let mut cpu_mode = 0usize; // 0 = two humans, 1 = P2 is a CPU, 2 = CPU vs CPU (spectate)
+    let mut idle_t = 0.0f32; // lets CPU vs CPU matches roll on by themselves
     let mut start_theme = 0usize;
     let mut round_no = 1u32;
     let mut wins = [0u32; 2];
@@ -3673,6 +3674,7 @@ fn main() {
         let dt = rl.get_frame_time().min(0.05);
         let t = rl.get_time() as f32;
         let mode = MODES[mode_idx];
+        let cpu = [cpu_mode == 2, cpu_mode >= 1]; // which players are bots
 
         // screen effects calm down in real time
         w.fx.shake *= 0.86f32.powf(dt * 60.0);
@@ -3732,7 +3734,12 @@ fn main() {
                 let col = previews[i].kind.color();
                 play_death(choice, px, py, col, &mut w);
             }
-            let both_ready = ready[0] && (ready[1] || cpu);
+            // two humans: both ready. vs CPU: just you. CPU vs CPU: either player's ready key starts it
+            let both_ready = match cpu_mode {
+                0 => ready[0] && ready[1],
+                1 => ready[0],
+                _ => ready[0] || ready[1],
+            };
             if !both_ready {
                 if rl.is_key_pressed(KeyboardKey::KEY_M) {
                     theme_idx = cycle(theme_idx, THEMES.len(), 1);
@@ -3745,7 +3752,7 @@ fn main() {
                     mode_idx = cycle(mode_idx, MODES.len(), 1);
                 }
                 if rl.is_key_pressed(KeyboardKey::KEY_C) {
-                    cpu = !cpu;
+                    cpu_mode = (cpu_mode + 1) % 3;
                 }
             }
 
@@ -3843,8 +3850,8 @@ fn main() {
 
                     // ---- inputs: keyboard or CPU ----
                     let inputs = [
-                        read_input(&rl, &keys[0]),
-                        if cpu { bot_input(&players[1], &players[0], &mut w.rng) } else { read_input(&rl, &keys[1]) },
+                        if cpu[0] { bot_input(&players[0], &players[1], &mut w.rng) } else { read_input(&rl, &keys[0]) },
+                        if cpu[1] { bot_input(&players[1], &players[0], &mut w.rng) } else { read_input(&rl, &keys[1]) },
                     ];
                     for i in 0..2 {
                         if players[i].dead_t > 0.0 {
@@ -4097,7 +4104,17 @@ fn main() {
                 update_booms(&mut w.booms, dt);
                 update_particles(&mut w.parts, dt);
                 update_strikes(&mut players, &mut w, dt);
-                if pending_vic.is_none() && rl.is_key_pressed(KeyboardKey::KEY_R) {
+                // in CPU vs CPU the match plays itself: next round after a few seconds,
+                // and back to the menu a bit after the final round
+                if pending_vic.is_none() && cpu[0] && cpu[1] {
+                    idle_t += dt;
+                } else {
+                    idle_t = 0.0;
+                }
+                let auto_next = idle_t > 3.5;
+                let auto_menu = idle_t > 6.0;
+                if pending_vic.is_none() && (rl.is_key_pressed(KeyboardKey::KEY_R) || (series_over && auto_menu)) {
+                    idle_t = 0.0;
                     selecting = true;
                     ready = [false, false];
                     w.clear();
@@ -4106,8 +4123,9 @@ fn main() {
                     map = make_map(THEMES[theme_idx]);
                 } else if pending_vic.is_none()
                     && !series_over
-                    && (rl.is_key_pressed(KeyboardKey::KEY_SPACE) || rl.is_key_pressed(KeyboardKey::KEY_ENTER))
+                    && (rl.is_key_pressed(KeyboardKey::KEY_SPACE) || rl.is_key_pressed(KeyboardKey::KEY_ENTER) || auto_next)
                 {
+                    idle_t = 0.0;
                     // next round: next theme in the rotation, fresh squares
                     round_no += 1;
                     theme_idx = cycle(theme_idx, THEMES.len(), 1);
@@ -4145,9 +4163,9 @@ fn main() {
                 let py = 100;
                 d.draw_rectangle(px, py, 600, 460, Color::new(0, 0, 0, 170));
                 d.draw_rectangle_lines(px, py, 600, 460, Color::WHITE);
-                let label = if i == 1 && cpu { "PLAYER 2 (CPU)".to_string() } else { format!("PLAYER {}", i + 1) };
+                let label = if cpu[i] { format!("PLAYER {} (CPU)", i + 1) } else { format!("PLAYER {}", i + 1) };
                 text(&mut d, &label, px + 16, py + 8, 28, previews[i].kind.color());
-                if ready[i] || (i == 1 && cpu) {
+                if ready[i] || cpu[i] {
                     text(&mut d, "READY!", px + 440, py + 8, 30, Color::LIME);
                 }
 
@@ -4205,17 +4223,26 @@ fn main() {
             center_text(
                 &mut d,
                 &format!(
-                    "ROUNDS: {} (N)    MODE: {} (B)    P2: {} (C)",
+                    "ROUNDS: {} (N)    MODE: {} (B)    PLAYERS: {} (C)",
                     round_options[rounds_idx],
                     mode.name(),
-                    if cpu { "CPU" } else { "HUMAN" }
+                    match cpu_mode {
+                        0 => "HUMAN vs HUMAN",
+                        1 => "HUMAN vs CPU",
+                        _ => "CPU vs CPU",
+                    }
                 ),
                 604,
                 26,
                 Color::WHITE,
             );
             center_text(&mut d, mode.blurb(), 636, 22, Color::LIGHTGRAY);
-            center_text(&mut d, "Every round switches to the next map. Both ready = fight!", 664, 22, Color::LIME);
+            let go = match cpu_mode {
+                0 => "Every round switches to the next map. Both ready = fight!",
+                1 => "Every round switches to the next map. Press F to fight the CPU!",
+                _ => "CPU vs CPU: sit back and watch - press F or L to start (matches keep rolling by themselves)",
+            };
+            center_text(&mut d, go, 664, 22, Color::LIME);
         } else {
             // ---- the cinematic camera: shake, zoom punch, KO zoom ----
             let ko_prog = if ko_timer > 0.0 { ease(1.0 - ko_timer / KO_TIME) } else { 0.0 };
