@@ -729,33 +729,128 @@ fn read_input(rl: &RaylibHandle, k: &Keys) -> Input {
     }
 }
 
-// a simple CPU opponent: chases, jumps, fights, blocks incoming attacks
-fn bot_input(me: &Player, foe: &Player, rng: &mut Rng) -> Input {
+// =====================================================================
+// CPU personalities
+// =====================================================================
+
+// every number is a per-frame chance or a distance, so a profile is just a "feel"
+struct Profile {
+    dist: f32,   // preferred fighting distance
+    flee: f32,   // chance to back off when the foe is too close
+    melee: f32,  // knife swings when in reach
+    abil: f32,   // chance to fire a ready ability
+    block: f32,  // chance to guard when the foe attacks
+    jump: f32,   // random hopping
+    ult: f32,    // chance to cash in a full ultimate
+    react: f32,  // 1.0 = acts every frame, lower = slow reactions
+    smart: f32,  // how often it checks an ability makes sense before using it
+    wobble: f32, // erratic strafing
+    range: f32,  // how far away it will use abilities
+}
+
+const CPU_NAMES: [&str; 9] = [
+    "BALANCED",
+    "AGGRESSOR",
+    "DEFENDER",
+    "SNIPER",
+    "TRICKSTER",
+    "BERSERKER",
+    "ROOKIE",
+    "PRO",
+    "RANDOM",
+];
+
+const CPU_BLURBS: [&str; 9] = [
+    "a bit of everything",
+    "closes in fast and loves the knife",
+    "guards and parries, then counters",
+    "keeps its distance and fires abilities",
+    "erratic, hops around, unpredictable",
+    "relentless, no defence, spams everything",
+    "slow reactions, easy to beat",
+    "sharp spacing, smart abilities, hard to hit",
+    "a different personality each round",
+];
+
+fn cpu_profile(idx: usize) -> Profile {
+    let p = |dist, flee, melee, abil, block, jump, ult, react, smart, wobble, range| Profile {
+        dist,
+        flee,
+        melee,
+        abil,
+        block,
+        jump,
+        ult,
+        react,
+        smart,
+        wobble,
+        range,
+    };
+    match idx {
+        1 => p(70.0, 0.05, 0.25, 0.05, 0.15, 0.006, 0.08, 1.0, 0.5, 0.1, 450.0), // AGGRESSOR
+        2 => p(160.0, 0.5, 0.08, 0.025, 0.9, 0.003, 0.05, 1.0, 0.9, 0.05, 450.0), // DEFENDER
+        3 => p(380.0, 0.9, 0.06, 0.07, 0.4, 0.01, 0.07, 1.0, 0.9, 0.3, 800.0),   // SNIPER
+        4 => p(130.0, 0.4, 0.15, 0.06, 0.3, 0.02, 0.1, 1.0, 0.4, 0.8, 520.0),    // TRICKSTER
+        5 => p(50.0, 0.0, 0.35, 0.08, 0.0, 0.008, 0.15, 1.0, 0.3, 0.2, 500.0),   // BERSERKER
+        6 => p(130.0, 0.1, 0.05, 0.015, 0.1, 0.004, 0.02, 0.35, 0.2, 0.4, 420.0), // ROOKIE
+        7 => p(100.0, 0.5, 0.2, 0.06, 0.8, 0.005, 0.1, 1.0, 1.0, 0.15, 560.0),   // PRO
+        _ => p(110.0, 0.3, 0.12, 0.03, 0.5, 0.004, 0.05, 1.0, 0.7, 0.1, 520.0),  // BALANCED
+    }
+}
+
+// would using this ability right now make sense?
+fn ability_ok(ab: Ability, me: &Player, foe: &Player, dist: f32, foe_attacking: bool) -> bool {
+    match ab {
+        Ability::Mend => me.hp < me.max_hp - 25.0,
+        Ability::Shield => foe_attacking || dist < 160.0,
+        Ability::Pulse => dist < 190.0,
+        Ability::Dash => dist > 90.0 && dist < 420.0,
+        Ability::Magnet => dist > 220.0,
+        Ability::Slam => dist < 300.0,
+        Ability::Blink => dist > 200.0 || foe_attacking,
+        Ability::Hop => foe.y + 40.0 < me.y || foe_attacking,
+        Ability::Bomb | Ability::Frost | Ability::Fireball => dist > 130.0,
+        Ability::Thunder => true,
+    }
+}
+
+// the CPU brain: reads the same game state a player sees and builds an Input
+fn bot_input(me: &Player, foe: &Player, rng: &mut Rng, prof: &Profile, t: f32, seed: f32) -> Input {
     let mut i = Input::default();
-    let (mx, _) = me.center();
+    let (mx, my) = me.center();
     let (fx, fy) = foe.center();
-    let my = me.center().1;
     let dx = fx - mx;
     let dy = fy - my;
     let dist = dx.abs();
-    let want = if dist > 110.0 {
+    let foe_attacking = foe.melee_t > 0.0 || foe.dash_t > 0.0 || foe.slam;
+    let react = rng.next() < prof.react; // slow profiles skip decisions some frames
+
+    // ---- movement: hold the preferred distance ----
+    let gap = dist - prof.dist;
+    let mut want = if gap > 30.0 {
         dx.signum()
-    } else if dist < 60.0 && rng.next() < 0.3 {
+    } else if gap < -30.0 && rng.next() < prof.flee {
         -dx.signum()
     } else {
         0.0
     };
+    // erratic profiles sometimes strafe the wrong way
+    if prof.wobble > 0.0 && (t * 1.7 + seed).sin() > 1.0 - prof.wobble * 1.5 {
+        want = -want;
+    }
     if want > 0.0 {
         i.right = true;
     } else if want < 0.0 {
         i.left = true;
     }
+
+    // ---- jumping: reach the foe, climb walls, double jump ----
     if me.on_ground {
         if dy < -80.0 && rng.next() < 0.06 {
             i.jump = true;
         } else if me.vx.abs() < 5.0 && want != 0.0 && rng.next() < 0.1 {
             i.jump = true;
-        } else if rng.next() < 0.004 {
+        } else if rng.next() < prof.jump {
             i.jump = true;
         }
     } else if me.wall_dir != 0.0 && rng.next() < 0.1 {
@@ -763,20 +858,31 @@ fn bot_input(me: &Player, foe: &Player, rng: &mut Rng) -> Input {
     } else if me.air_jumps > 0 && dy < -120.0 && me.vy > 0.0 && rng.next() < 0.05 {
         i.jump = true;
     }
-    if dist < 95.0 && dy.abs() < 80.0 && rng.next() < 0.12 {
-        i.melee = true;
+
+    // ---- attacking ----
+    if react {
+        if dist < 95.0 && dy.abs() < 80.0 && rng.next() < prof.melee {
+            i.melee = true;
+        }
+        let loadout = me.abilities;
+        let in_range = dist < prof.range;
+        let wants = |ab: Ability, rng: &mut Rng| -> bool {
+            in_range && (rng.next() >= prof.smart || ability_ok(ab, me, foe, dist, foe_attacking))
+        };
+        if me.cd1 <= 0.0 && rng.next() < prof.abil && wants(loadout[0], rng) {
+            i.a1 = true;
+        }
+        if me.cd2 <= 0.0 && rng.next() < prof.abil && wants(loadout[1], rng) {
+            i.a2 = true;
+        }
+        if me.ult >= ULT_MAX && dist < 650.0 && rng.next() < prof.ult {
+            i.ult = true;
+        }
     }
-    if me.cd1 <= 0.0 && dist < 520.0 && rng.next() < 0.03 {
-        i.a1 = true;
-    }
-    if me.cd2 <= 0.0 && dist < 520.0 && rng.next() < 0.03 {
-        i.a2 = true;
-    }
-    if (foe.melee_t > 0.0 || foe.dash_t > 0.0) && dist < 160.0 && rng.next() < 0.5 {
+
+    // ---- defending ----
+    if foe_attacking && dist < 170.0 && rng.next() < prof.block * if react { 1.0 } else { 0.4 } {
         i.block_down = true;
-    }
-    if me.ult >= ULT_MAX && dist < 600.0 && rng.next() < 0.05 {
-        i.ult = true;
     }
     i
 }
@@ -2446,7 +2552,7 @@ fn center_text(d: &mut impl RaylibDraw, s: &str, y: i32, size: i32, color: Color
     text(d, s, W / 2 - text_width(s, size) / 2, y, size, color);
 }
 
-fn draw_hud(d: &mut impl RaylibDraw, players: &[Player; 2], mode: Mode, rd: &Round, t: f32) {
+fn draw_hud(d: &mut impl RaylibDraw, players: &[Player; 2], mode: Mode, rd: &Round, t: f32, tags: &[Option<&str>; 2]) {
     let labels = [("F", "G"), ("COMMA", "PERIOD")];
     let ult_keys = ["V", "R-CTRL"];
     for (i, p) in players.iter().enumerate() {
@@ -2457,7 +2563,11 @@ fn draw_hud(d: &mut impl RaylibDraw, players: &[Player; 2], mode: Mode, rd: &Rou
         let fx = if i == 0 { x } else { x + bar_w - fill };
         d.draw_rectangle(fx as i32, 20, fill as i32, 24, p.kind.color());
         d.draw_text(&format!("{:.0}", p.hp.ceil()), x as i32 + 6, 22, 20, Color::WHITE);
-        text(d, &format!("P{} {}", i + 1, p.kind.name()), x as i32, 52, 28, Color::WHITE);
+        let name = match tags[i] {
+            Some(tag) => format!("P{} {} [CPU {}]", i + 1, p.kind.name(), tag),
+            None => format!("P{} {}", i + 1, p.kind.name()),
+        };
+        text(d, &name, x as i32, 52, if tags[i].is_some() { 22 } else { 28 }, Color::WHITE);
 
         // stock dots
         if mode == Mode::Stock {
@@ -3657,6 +3767,8 @@ fn main() {
     let mut mode_idx = 0usize;
     let mut cpu_mode = 0usize; // 0 = two humans, 1 = P2 is a CPU, 2 = CPU vs CPU (spectate)
     let mut idle_t = 0.0f32; // lets CPU vs CPU matches roll on by themselves
+    let mut cpu_prof = [0usize, 7usize]; // chosen CPU personality per player (8 = random each round)
+    let mut cpu_now = [0usize, 7usize]; // the personality actually in use this round
     let mut start_theme = 0usize;
     let mut round_no = 1u32;
     let mut wins = [0u32; 2];
@@ -3751,6 +3863,12 @@ fn main() {
                 if rl.is_key_pressed(KeyboardKey::KEY_B) {
                     mode_idx = cycle(mode_idx, MODES.len(), 1);
                 }
+                if rl.is_key_pressed(KeyboardKey::KEY_ONE) {
+                    cpu_prof[0] = cycle(cpu_prof[0], CPU_NAMES.len(), 1);
+                }
+                if rl.is_key_pressed(KeyboardKey::KEY_TWO) {
+                    cpu_prof[1] = cycle(cpu_prof[1], CPU_NAMES.len(), 1);
+                }
                 if rl.is_key_pressed(KeyboardKey::KEY_C) {
                     cpu_mode = (cpu_mode + 1) % 3;
                 }
@@ -3786,6 +3904,10 @@ fn main() {
                 vic = None;
                 pending_vic = None;
                 rd = Round::new();
+                for i in 0..2 {
+                    cpu_now[i] = if cpu_prof[i] >= 8 { (w.rng.next() * 8.0) as usize % 8 } else { cpu_prof[i] };
+                }
+                idle_t = 0.0;
                 selecting = false;
             }
         } else {
@@ -3850,8 +3972,16 @@ fn main() {
 
                     // ---- inputs: keyboard or CPU ----
                     let inputs = [
-                        if cpu[0] { bot_input(&players[0], &players[1], &mut w.rng) } else { read_input(&rl, &keys[0]) },
-                        if cpu[1] { bot_input(&players[1], &players[0], &mut w.rng) } else { read_input(&rl, &keys[1]) },
+                        if cpu[0] {
+                            bot_input(&players[0], &players[1], &mut w.rng, &cpu_profile(cpu_now[0]), t, 0.0)
+                        } else {
+                            read_input(&rl, &keys[0])
+                        },
+                        if cpu[1] {
+                            bot_input(&players[1], &players[0], &mut w.rng, &cpu_profile(cpu_now[1]), t, 3.7)
+                        } else {
+                            read_input(&rl, &keys[1])
+                        },
                     ];
                     for i in 0..2 {
                         if players[i].dead_t > 0.0 {
@@ -4137,6 +4267,10 @@ fn main() {
                     w.clear();
                     result = None;
                     rd = Round::new();
+                    for i in 0..2 {
+                        // "RANDOM" personalities are re-rolled every round
+                        cpu_now[i] = if cpu_prof[i] >= 8 { (w.rng.next() * 8.0) as usize % 8 } else { cpu_prof[i] };
+                    }
                 }
             }
         }
@@ -4163,7 +4297,11 @@ fn main() {
                 let py = 100;
                 d.draw_rectangle(px, py, 600, 460, Color::new(0, 0, 0, 170));
                 d.draw_rectangle_lines(px, py, 600, 460, Color::WHITE);
-                let label = if cpu[i] { format!("PLAYER {} (CPU)", i + 1) } else { format!("PLAYER {}", i + 1) };
+                let label = if cpu[i] {
+                    format!("PLAYER {} (CPU: {})", i + 1, CPU_NAMES[cpu_prof[i]])
+                } else {
+                    format!("PLAYER {}", i + 1)
+                };
                 text(&mut d, &label, px + 16, py + 8, 28, previews[i].kind.color());
                 if ready[i] || cpu[i] {
                     text(&mut d, "READY!", px + 440, py + 8, 30, Color::LIME);
@@ -4207,7 +4345,9 @@ fn main() {
                     6 => ("VICTORY", VICTORY_BLURBS[s.victory]),
                     _ => ("", ""),
                 };
-                let note = if blurb.is_empty() {
+                let note = if blurb.is_empty() && cpu[i] {
+                    format!("CPU {} ({}): {}", CPU_NAMES[cpu_prof[i]], if i == 0 { "key 1" } else { "key 2" }, CPU_BLURBS[cpu_prof[i]])
+                } else if blurb.is_empty() {
                     format!("DEATH: {}   VICTORY: {}", DEATH_NAMES[s.death], VICTORY_NAMES[s.victory])
                 } else {
                     format!("{}: {}", tag, blurb)
@@ -4239,8 +4379,8 @@ fn main() {
             center_text(&mut d, mode.blurb(), 636, 22, Color::LIGHTGRAY);
             let go = match cpu_mode {
                 0 => "Every round switches to the next map. Both ready = fight!",
-                1 => "Every round switches to the next map. Press F to fight the CPU!",
-                _ => "CPU vs CPU: sit back and watch - press F or L to start (matches keep rolling by themselves)",
+                1 => "Press F to fight the CPU!  (key 2 changes its personality)",
+                _ => "CPU vs CPU: keys 1 and 2 change their personalities - press F or L to start and watch",
             };
             center_text(&mut d, go, 664, 22, Color::LIME);
         } else {
@@ -4278,7 +4418,11 @@ fn main() {
 
             // the HUD steps aside while a victory cutscene plays
             if vic.is_none() {
-            draw_hud(&mut d, &players, mode, &rd, t);
+            let tags = [
+                if cpu[0] { Some(CPU_NAMES[cpu_now[0]]) } else { None },
+                if cpu[1] { Some(CPU_NAMES[cpu_now[1]]) } else { None },
+            ];
+            draw_hud(&mut d, &players, mode, &rd, t, &tags);
             // round counter and running tally, top center
             center_text(&mut d, &format!("ROUND {} / {}", round_no, round_options[rounds_idx]), 12, 24, Color::WHITE);
             center_text(&mut d, &format!("{}  -  {}", wins[0], wins[1]), 42, 44, Color::YELLOW);
