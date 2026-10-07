@@ -24,7 +24,7 @@ const BLAST_R: f32 = 120.0;
 const SHIELD_TIME: f32 = 1.2;
 const BOOM_TIME: f32 = 0.3;
 const MELEE_TIME: f32 = 0.25; // length of the knife swing
-const MELEE_CD: f32 = 0.45;
+const MELEE_CD: f32 = 0.0; // no cooldown (you still finish the swing in progress)
 const MELEE_DMG: f32 = 10.0;
 const MELEE_REACH: f32 = 80.0;
 
@@ -568,16 +568,16 @@ fn draw_hud(d: &mut impl RaylibDraw, players: &[Player; 2]) {
         let fill = bar_w * p.hp / MAX_HP;
         let fx = if i == 0 { x } else { x + bar_w - fill };
         d.draw_rectangle(fx as i32, 20, fill as i32, 24, p.kind.color());
-        d.draw_text(&format!("P{} {}", i + 1, p.kind.name()), x as i32, 50, 20, Color::BLACK);
+        text(d, &format!("P{} {}", i + 1, p.kind.name()), x as i32, 52, 28, Color::WHITE);
 
         let cds = [(p.cd1, p.kind.cooldowns().0, labels[i].0), (p.cd2, p.kind.cooldowns().1, labels[i].1)];
         for (k, (cd, max, label)) in cds.iter().enumerate() {
-            let px = x + 200.0 + k as f32 * 100.0;
-            d.draw_rectangle(px as i32, 52, 80, 14, Color::DARKGRAY);
+            let px = x + 230.0 + k as f32 * 100.0;
+            d.draw_rectangle(px as i32 - 2, 52, 84, 28, Color::BLACK);
             let ready = 1.0 - cd / max;
             let col = if *cd <= 0.0 { Color::LIME } else { Color::GRAY };
-            d.draw_rectangle(px as i32, 52, (80.0 * ready) as i32, 14, col);
-            d.draw_text(label, px as i32 + 36, 52, 14, Color::BLACK);
+            d.draw_rectangle(px as i32, 54, (80.0 * ready) as i32, 24, col);
+            text(d, label, px as i32 + 32, 54, 24, Color::WHITE);
         }
     }
 }
@@ -600,9 +600,20 @@ fn draw_world(d: &mut impl RaylibDraw, solids: &[Solid], bombs: &[Bomb], booms: 
     }
 }
 
-fn center_text(d: &mut impl RaylibDraw, text: &str, y: i32, size: i32, color: Color) {
-    let w = (text.len() as f32 * size as f32 * 0.5) as i32;
-    d.draw_text(text, W / 2 - w / 2, y, size, color);
+// readable on any background: colored text with a thick black outline
+fn text(d: &mut impl RaylibDraw, s: &str, x: i32, y: i32, size: i32, color: Color) {
+    for (ox, oy) in [(-2, 0), (2, 0), (0, -2), (0, 2), (-2, -2), (2, 2), (-2, 2), (2, -2)] {
+        d.draw_text(s, x + ox, y + oy, size, Color::BLACK);
+    }
+    d.draw_text(s, x, y, size, color);
+}
+
+fn text_width(s: &str, size: i32) -> i32 {
+    (s.len() as f32 * size as f32 * 0.55) as i32
+}
+
+fn center_text(d: &mut impl RaylibDraw, s: &str, y: i32, size: i32, color: Color) {
+    text(d, s, W / 2 - text_width(s, size) / 2, y, size, color);
 }
 
 fn main() {
@@ -744,46 +755,43 @@ fn main() {
         d.clear_background(Color::SKYBLUE);
 
         if selecting {
-            center_text(&mut d, "PAUSI", 40, 60, Color::BLACK);
-            center_text(&mut d, "pick a square - ready up (P1: F, P2: L)", 110, 24, Color::DARKBLUE);
+            center_text(&mut d, "PAUSI", 30, 80, Color::WHITE);
+            center_text(&mut d, "Pick your square, then press READY (P1: F, P2: L)", 125, 28, Color::YELLOW);
             for (k, kind) in KINDS.iter().enumerate() {
                 let x = 330.0 + k as f32 * 240.0;
                 d.draw_rectangle(x as i32, 230, 100, 100, kind.color());
-                d.draw_text(kind.name(), x as i32 - 5, 345, 22, Color::BLACK);
+                text(&mut d, kind.name(), x as i32 - 10, 345, 28, Color::WHITE);
                 for i in 0..2 {
                     if sel[i] == k {
-                        let col = if ready[i] { Color::DARKGREEN } else { Color::BLACK };
-                        let y = 375 + i as i32 * 26;
-                        d.draw_text(&format!("P{}{}", i + 1, if ready[i] { " READY" } else { "" }), x as i32, y, 22, col);
+                        let col = if ready[i] { Color::LIME } else { Color::WHITE };
+                        let y = 380 + i as i32 * 32;
+                        let label = format!("P{}{}", i + 1, if ready[i] { " READY!" } else { "" });
+                        text(&mut d, &label, x as i32, y, 28, col);
                     }
                 }
             }
             for i in 0..2 {
                 let k = KINDS[sel[i]];
-                let x = if i == 0 { 60 } else { 700 };
-                d.draw_text(&format!("P{}: {}", i + 1, k.name()), x, 470, 26, k.color());
-                d.draw_text(k.blurb()[0], x, 505, 20, Color::BLACK);
-                d.draw_text(k.blurb()[1], x, 530, 20, Color::BLACK);
+                let x = if i == 0 { 40 } else { 680 };
+                text(&mut d, &format!("P{}: {}", i + 1, k.name()), x, 470, 34, k.color());
+                text(&mut d, k.blurb()[0], x, 515, 24, Color::WHITE);
+                text(&mut d, k.blurb()[1], x, 548, 24, Color::WHITE);
             }
-            d.draw_text("P1: A/D choose, F ready", 60, 640, 20, Color::DARKGRAY);
-            d.draw_text("P2: Left/Right choose, L ready", 700, 640, 20, Color::DARKGRAY);
+            text(&mut d, "P1: A/D choose, F ready", 40, 640, 26, Color::YELLOW);
+            text(&mut d, "P2: Left/Right choose, L ready", 680, 640, 26, Color::YELLOW);
         } else {
             draw_world(&mut d, &solids, &bombs, &booms);
             for p in players.iter() {
                 draw_player(&mut d, p);
             }
             draw_hud(&mut d, &players);
-            d.draw_text("P1: A/D move, W jump, S charge, F/G abilities, E knife", 20, H - 30, 18, Color::WHITE);
-            d.draw_text(
-                "P2: arrows, ','/'.' abilities, '/' knife",
-                W - 400,
-                H - 30,
-                18,
-                Color::WHITE,
-            );
-            if let Some(text) = &result {
-                center_text(&mut d, text, 250, 64, Color::BLACK);
-                center_text(&mut d, "press R to pick again", 330, 28, Color::DARKBLUE);
+            let p1 = "P1: A/D move  W jump  S charge  F/G abilities  E knife";
+            let p2 = "P2: arrows  , . abilities  / knife";
+            text(&mut d, p1, 15, H - 32, 22, Color::WHITE);
+            text(&mut d, p2, W - text_width(p2, 22) - 15, H - 32, 22, Color::WHITE);
+            if let Some(msg) = &result {
+                center_text(&mut d, msg, 240, 80, Color::YELLOW);
+                center_text(&mut d, "Press R to pick again", 340, 36, Color::WHITE);
             }
         }
     }
