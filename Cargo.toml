@@ -2,6 +2,8 @@
 name = "pausi"
 version = "0.1.0"
 edition = "2024"
+description = "A fast, chaotic square-vs-square duel game: 6 characters, 12 abilities, 8 maps, cinematic KOs, CPU opponents. Built with Rust and raylib."
+readme = "README.md"
 
 [dependencies]
 raylib = "5.5"
