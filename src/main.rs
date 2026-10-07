@@ -561,6 +561,7 @@ fn main() {
             a2: KeyboardKey::KEY_PERIOD,
         },
     ];
+    let ready_keys = [KeyboardKey::KEY_F, KeyboardKey::KEY_L]; // select-screen ready
     let spawns = [(120.0, 1.0), (W as f32 - 120.0 - SIZE, -1.0)];
 
     let solids = level();
@@ -589,7 +590,7 @@ fn main() {
                         sel[i] = (sel[i] + 1) % KINDS.len();
                     }
                 }
-                if rl.is_key_pressed(keys[i].a1) {
+                if rl.is_key_pressed(ready_keys[i]) {
                     ready[i] = !ready[i];
                 }
             }
@@ -676,7 +677,7 @@ fn main() {
 
         if selecting {
             center_text(&mut d, "PAUSI", 40, 60, Color::BLACK);
-            center_text(&mut d, "pick a square - ready up with your ability 1 key", 110, 24, Color::DARKBLUE);
+            center_text(&mut d, "pick a square - ready up (P1: F, P2: L)", 110, 24, Color::DARKBLUE);
             for (k, kind) in KINDS.iter().enumerate() {
                 let x = 330.0 + k as f32 * 240.0;
                 d.draw_rectangle(x as i32, 230, 100, 100, kind.color());
@@ -697,7 +698,7 @@ fn main() {
                 d.draw_text(k.blurb()[1], x, 530, 20, Color::BLACK);
             }
             d.draw_text("P1: A/D choose, F ready", 60, 640, 20, Color::DARKGRAY);
-            d.draw_text("P2: Left/Right choose, ',' ready", 700, 640, 20, Color::DARKGRAY);
+            d.draw_text("P2: Left/Right choose, L ready", 700, 640, 20, Color::DARKGRAY);
         } else {
             draw_world(&mut d, &solids, &bombs, &booms);
             for p in players.iter() {
