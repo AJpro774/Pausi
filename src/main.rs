@@ -23,6 +23,10 @@ const BOMB_GRAVITY: f32 = 600.0;
 const BLAST_R: f32 = 120.0;
 const SHIELD_TIME: f32 = 1.2;
 const BOOM_TIME: f32 = 0.3;
+const MELEE_TIME: f32 = 0.25; // length of the knife swing
+const MELEE_CD: f32 = 0.45;
+const MELEE_DMG: f32 = 10.0;
+const MELEE_REACH: f32 = 80.0;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Eyes {
@@ -82,6 +86,7 @@ struct Keys {
     down: KeyboardKey,
     a1: KeyboardKey,
     a2: KeyboardKey,
+    melee: KeyboardKey,
 }
 
 struct Player {
@@ -106,6 +111,9 @@ struct Player {
     slam: bool,
     shield_t: f32,
     hurt_t: f32,
+    melee_t: f32,
+    melee_cd: f32,
+    melee_hit: bool,
 }
 
 impl Player {
@@ -132,6 +140,9 @@ impl Player {
             slam: false,
             shield_t: 0.0,
             hurt_t: 0.0,
+            melee_t: 0.0,
+            melee_cd: 0.0,
+            melee_hit: false,
         }
     }
 
@@ -388,7 +399,28 @@ fn update_player(
         me.vy = me.vy.max(SLAM_SPEED);
     }
 
+    // ---- melee: knife swing ----
+    me.melee_cd = (me.melee_cd - dt).max(0.0);
+    me.melee_t = (me.melee_t - dt).max(0.0);
+    if rl.is_key_pressed(me.keys.melee) && me.melee_cd <= 0.0 && me.melee_t <= 0.0 {
+        me.melee_t = MELEE_TIME;
+        me.melee_cd = MELEE_CD;
+        me.melee_hit = false;
+    }
+
     step(me, solids, dt);
+
+    if me.melee_t > 0.0 && !me.melee_hit {
+        let progress = 1.0 - me.melee_t / MELEE_TIME;
+        if (0.2..0.85).contains(&progress) {
+            let rx = if me.facing > 0.0 { me.x + SIZE } else { me.x - MELEE_REACH };
+            let zone = Rectangle::new(rx, me.y - 10.0, MELEE_REACH, SIZE + 20.0);
+            if overlaps(&zone, &foe.rect()) {
+                foe.hurt(MELEE_DMG, me.facing * 350.0, -180.0);
+                me.melee_hit = true;
+            }
+        }
+    }
 
     // ---- ability results ----
     if me.dash_t > 0.0 && !me.dash_hit && overlaps(&me.rect(), &foe.rect()) {
@@ -444,6 +476,35 @@ fn explode(players: &mut [Player; 2], owner: usize, cx: f32, cy: f32, booms: &mu
     }
 }
 
+// pixel-style knife, drawn from rectangles. (px, py) is the handle end,
+// theta is degrees clockwise from straight up, flip = 1 or -1 (facing).
+fn draw_knife(d: &mut impl RaylibDraw, px: f32, py: f32, theta: f32, flip: f32) {
+    let steel = Color::new(130, 180, 200, 255);
+    let wood = Color::new(140, 85, 40, 255);
+    let dark_wood = Color::new(90, 55, 25, 255);
+    // (x0, y0, x1, y1) in knife space: handle at y=0, blade toward negative y
+    let parts = [
+        (-6.0, -24.0, 6.0, 2.0, Color::BLACK),
+        (-4.0, -22.0, 4.0, 0.0, wood),
+        (-12.0, -30.0, 12.0, -22.0, Color::BLACK),
+        (-10.0, -28.0, 10.0, -24.0, dark_wood),
+        (-8.0, -80.0, 8.0, -28.0, Color::BLACK),
+        (-5.0, -92.0, 5.0, -80.0, Color::BLACK),
+        (-5.0, -78.0, 5.0, -30.0, steel),
+        (1.0, -78.0, 5.0, -30.0, Color::WHITE),
+        (-3.0, -90.0, 3.0, -78.0, steel),
+    ];
+    let (s, c) = theta.to_radians().sin_cos();
+    for (x0, y0, x1, y1, col) in parts {
+        let (w, h) = (x1 - x0, y1 - y0);
+        let lx = (x0 + x1) / 2.0 * flip;
+        let ly = (y0 + y1) / 2.0;
+        let cx = px + lx * c - ly * s;
+        let cy = py + lx * s + ly * c;
+        d.draw_rectangle_pro(Rectangle::new(cx, cy, w, h), Vector2::new(w / 2.0, h / 2.0), theta, col);
+    }
+}
+
 fn draw_player(d: &mut impl RaylibDraw, p: &Player) {
     let w = SIZE;
     let h = SIZE - p.crouch;
@@ -475,6 +536,11 @@ fn draw_player(d: &mut impl RaylibDraw, p: &Player) {
         );
     }
 
+    if p.melee_t > 0.0 {
+        let progress = 1.0 - p.melee_t / MELEE_TIME;
+        let angle = (-60.0 + 150.0 * progress) * p.facing; // raised -> slashed down
+        draw_knife(d, cx + p.facing * SIZE * 0.35, cy + SIZE * 0.1, angle, p.facing);
+    }
     if p.shield_t > 0.0 {
         d.draw_circle(cx as i32, cy as i32, SIZE * 0.95, Color::new(120, 220, 255, 70));
         d.draw_circle_lines(cx as i32, cy as i32, SIZE * 0.95, Color::new(120, 220, 255, 255));
@@ -551,6 +617,7 @@ fn main() {
             down: KeyboardKey::KEY_S,
             a1: KeyboardKey::KEY_F,
             a2: KeyboardKey::KEY_G,
+            melee: KeyboardKey::KEY_E,
         },
         Keys {
             left: KeyboardKey::KEY_LEFT,
@@ -559,6 +626,7 @@ fn main() {
             down: KeyboardKey::KEY_DOWN,
             a1: KeyboardKey::KEY_COMMA,
             a2: KeyboardKey::KEY_PERIOD,
+            melee: KeyboardKey::KEY_SLASH,
         },
     ];
     let ready_keys = [KeyboardKey::KEY_F, KeyboardKey::KEY_L]; // select-screen ready
@@ -705,10 +773,10 @@ fn main() {
                 draw_player(&mut d, p);
             }
             draw_hud(&mut d, &players);
-            d.draw_text("P1: A/D move, W jump, S charge, F/G abilities", 20, H - 30, 18, Color::WHITE);
+            d.draw_text("P1: A/D move, W jump, S charge, F/G abilities, E knife", 20, H - 30, 18, Color::WHITE);
             d.draw_text(
-                "P2: arrows, ','/'.' abilities",
-                W - 300,
+                "P2: arrows, ','/'.' abilities, '/' knife",
+                W - 400,
                 H - 30,
                 18,
                 Color::WHITE,
