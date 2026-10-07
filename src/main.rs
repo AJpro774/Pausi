@@ -52,7 +52,7 @@ fn launch(sq: &mut Square, power: f32) {
 }
 
 fn main() {
-    let (mut rl, thread) = raylib::init().size(W, H).title("SteamUP").build();
+    let (mut rl, thread) = raylib::init().size(W, H).title("Pausi").build();
     rl.set_target_fps(60);
 
     let right_edge = W as f32 - SIZE;
