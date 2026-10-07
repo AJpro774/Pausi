@@ -63,9 +63,17 @@ impl Kind {
     }
     fn blurb(self) -> [&'static str; 2] {
         match self {
-            Kind::Dasher => ["1: Dash - rams for 15 dmg", "2: Slam (in air) - shockwave, 20 dmg"],
-            Kind::Bomber => ["1: Bomb - 25 dmg, blast launches you too", "2: Air hop - boost anywhere"],
-            Kind::Shielder => ["1: Shield - blocks damage, reflects bombs", "2: Pulse - 12 dmg, big knockback"],
+            Kind::Dasher => ["DASH - ram forward, 15 dmg", "SLAM - leap and crash down, 20 dmg"],
+            Kind::Bomber => ["BOMB - thrown, 25 dmg, launches you too", "HOP - boost upward (even in air)"],
+            Kind::Shielder => ["SHIELD - blocks damage, reflects bombs", "PULSE - 12 dmg, big knockback"],
+        }
+    }
+    // short names for the in-fight HUD
+    fn ability_names(self) -> (&'static str, &'static str) {
+        match self {
+            Kind::Dasher => ("DASH", "SLAM"),
+            Kind::Bomber => ("BOMB", "HOP"),
+            Kind::Shielder => ("SHIELD", "PULSE"),
         }
     }
     // (ability 1 cooldown, ability 2 cooldown)
@@ -109,6 +117,7 @@ struct Player {
     dash_t: f32,
     dash_hit: bool,
     slam: bool,
+    slam_arm: bool,
     shield_t: f32,
     hurt_t: f32,
     melee_t: f32,
@@ -138,6 +147,7 @@ impl Player {
             dash_t: 0.0,
             dash_hit: false,
             slam: false,
+            slam_arm: false,
             shield_t: 0.0,
             hurt_t: 0.0,
             melee_t: 0.0,
@@ -367,10 +377,15 @@ fn update_player(
     if rl.is_key_pressed(me.keys.a2) && me.cd2 <= 0.0 {
         match me.kind {
             Kind::Dasher => {
-                if !me.on_ground {
+                if me.on_ground {
+                    // leap up first, then crash down at the top of the leap
+                    me.vy = -(2.0 * GRAVITY * JUMP * 0.8).sqrt();
+                    me.on_ground = false;
+                    me.slam_arm = true;
+                } else {
                     me.slam = true;
-                    me.cd2 = cd.1;
                 }
+                me.cd2 = cd.1;
             }
             Kind::Bomber => {
                 me.vy = -(2.0 * GRAVITY * JUMP * 1.2).sqrt();
@@ -394,6 +409,10 @@ fn update_player(
                 me.cd2 = cd.1;
             }
         }
+    }
+    if me.slam_arm && me.vy >= 0.0 {
+        me.slam_arm = false;
+        me.slam = true;
     }
     if me.slam {
         me.vy = me.vy.max(SLAM_SPEED);
@@ -570,14 +589,18 @@ fn draw_hud(d: &mut impl RaylibDraw, players: &[Player; 2]) {
         d.draw_rectangle(fx as i32, 20, fill as i32, 24, p.kind.color());
         text(d, &format!("P{} {}", i + 1, p.kind.name()), x as i32, 52, 28, Color::WHITE);
 
-        let cds = [(p.cd1, p.kind.cooldowns().0, labels[i].0), (p.cd2, p.kind.cooldowns().1, labels[i].1)];
+        let names = p.kind.ability_names();
+        let cds = [
+            (p.cd1, p.kind.cooldowns().0, format!("{}: {}", labels[i].0, names.0)),
+            (p.cd2, p.kind.cooldowns().1, format!("{}: {}", labels[i].1, names.1)),
+        ];
         for (k, (cd, max, label)) in cds.iter().enumerate() {
-            let px = x + 230.0 + k as f32 * 100.0;
-            d.draw_rectangle(px as i32 - 2, 52, 84, 28, Color::BLACK);
+            let px = x + k as f32 * 215.0;
+            d.draw_rectangle(px as i32 - 2, 82, 205, 32, Color::BLACK);
             let ready = 1.0 - cd / max;
-            let col = if *cd <= 0.0 { Color::LIME } else { Color::GRAY };
-            d.draw_rectangle(px as i32, 54, (80.0 * ready) as i32, 24, col);
-            text(d, label, px as i32 + 32, 54, 24, Color::WHITE);
+            let col = if *cd <= 0.0 { Color::new(40, 160, 40, 255) } else { Color::GRAY };
+            d.draw_rectangle(px as i32, 84, (201.0 * ready) as i32, 28, col);
+            text(d, label, px as i32 + 8, 86, 24, Color::WHITE);
         }
     }
 }
@@ -774,8 +797,11 @@ fn main() {
                 let k = KINDS[sel[i]];
                 let x = if i == 0 { 40 } else { 680 };
                 text(&mut d, &format!("P{}: {}", i + 1, k.name()), x, 470, 34, k.color());
-                text(&mut d, k.blurb()[0], x, 515, 24, Color::WHITE);
-                text(&mut d, k.blurb()[1], x, 548, 24, Color::WHITE);
+                let ks = if i == 0 { ("F", "G") } else { (",", ".") };
+                text(&mut d, &format!("{}: {}", ks.0, k.blurb()[0]), x, 515, 24, Color::WHITE);
+                text(&mut d, &format!("{}: {}", ks.1, k.blurb()[1]), x, 548, 24, Color::WHITE);
+                let knife = if i == 0 { "E: KNIFE - melee swing, 10 dmg" } else { "/: KNIFE - melee swing, 10 dmg" };
+                text(&mut d, knife, x, 581, 24, Color::WHITE);
             }
             text(&mut d, "P1: A/D choose, F ready", 40, 640, 26, Color::YELLOW);
             text(&mut d, "P2: Left/Right choose, L ready", 680, 640, 26, Color::YELLOW);
