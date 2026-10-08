@@ -4082,12 +4082,18 @@ fn main() {
 
         if selecting {
             // ---- loadout menus ----
-            if rl.is_key_pressed(KeyboardKey::KEY_H) {
-                help = !help;
-            }
-            if help && rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
-                help = false;
-            } else if !help && rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
+            let close_help = rl.is_key_pressed(KeyboardKey::KEY_H)
+                || rl.is_key_pressed(KeyboardKey::KEY_ESCAPE)
+                || rl.is_key_pressed(KeyboardKey::KEY_SPACE)
+                || rl.is_key_pressed(KeyboardKey::KEY_ENTER)
+                || rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT);
+            if help {
+                if close_help {
+                    help = false;
+                }
+            } else if rl.is_key_pressed(KeyboardKey::KEY_H) {
+                help = true;
+            } else if rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
                 break;
             }
             let mut preview_death: Option<(usize, usize)> = None;
@@ -4686,25 +4692,29 @@ fn main() {
             center_text(&mut d, go, 664, 22, Color::LIME);
             center_text(&mut d, "H help    F11 fullscreen    O mute    ESC quit    gamepads welcome", 692, 18, Color::LIGHTGRAY);
             if help {
-                d.draw_rectangle(80, 90, W - 160, 560, Color::new(8, 8, 12, 235));
-                d.draw_rectangle_lines(80, 90, W - 160, 560, Color::WHITE);
-                center_text(&mut d, "HOW TO PLAY", 110, 40, Color::YELLOW);
+                d.draw_rectangle(0, 0, W, H, Color::new(6, 8, 14, 255));
+                center_text(&mut d, "HOW TO PLAY", 36, 48, Color::YELLOW);
                 let lines = [
-                    "Move with A/D (P1) or arrows / left stick (P2). W or A-button jumps.",
-                    "Jump again in the air to double jump. Jump on a wall to kick off it.",
-                    "Hold S or down to charge a bigger jump, then release into the jump.",
-                    "F/G or X/B are your two abilities. They must be different.",
-                    "E or Y is the knife (short cooldown). Q or L1 blocks. Tap block to parry.",
-                    "V or R1 fires your ultimate once the meter is full.",
-                    "Shield stops lava, burn, frost, and pulls. A block only chips them.",
-                    "Best of 3 ends at 2 wins, best of 5 at 3. The series stops when someone clinches.",
-                    "During a fight: P or ESC pauses. R on the pause screen returns here.",
-                    "CPU vs CPU: [ ] changes speed, K skips the victory cutscenes.",
-                    "The first win of a series plays a cutscene. Later rounds just bank the point.",
-                    "Press H or ESC to close this.",
+                    "P1: A/D move, W jump, S charge",
+                    "P2: arrow keys move and jump",
+                    "Jump again in the air. Wall jump too.",
+                    "Pick two different abilities.",
+                    "P1: F/G abilities, E knife, Q block, V ult",
+                    "P2: comma/period, slash, R-shift, R-ctrl",
+                    "Pad: A jump, X/B abilities, Y knife",
+                    "Pad: L1 block, R1 ultimate, Start ready",
+                    "Shield stops lava, burn, frost, and pulls.",
+                    "A block only chips those.",
+                    "Best of 3 ends at 2 wins.",
+                    "It stops when someone clinches.",
+                    "P or Esc pauses. R returns here.",
+                    "CPU vs CPU: [ ] speed, K skips cutscenes.",
+                    "The first win plays a cutscene.",
+                    "Later rounds just bank the point.",
+                    "Click, or press H, Esc, or Space.",
                 ];
                 for (n, line) in lines.iter().enumerate() {
-                    text(&mut d, line, 120, 170 + n as i32 * 32, 22, Color::WHITE);
+                    center_text(&mut d, line, 100 + n as i32 * 32, 26, Color::WHITE);
                 }
             }
         } else {
@@ -4821,6 +4831,7 @@ fn main() {
             }
 
             // ---- victory cutscene: letterbox bars and a title card ----
+            if !paused {
             if let Some(v) = vic.as_ref() {
                 let bar = 90.0 * ease(v.t / 0.4);
                 d.draw_rectangle(0, 0, W, bar as i32, Color::BLACK);
@@ -4829,6 +4840,7 @@ fn main() {
                 let title = format!("P{} {}  -  {}", who + 1, players[who].kind.name(), VICTORY_NAMES[v.idx]);
                 center_text(&mut d, &title, 28, 30, Color::YELLOW);
                 center_text(&mut d, "SPACE = skip", H - 60, 20, Color::LIGHTGRAY);
+            }
             }
 
             // ---- big ultimate / parry banner ----
@@ -4841,7 +4853,7 @@ fn main() {
             }
 
             // ---- KO cinematic: letterbox bars + big K.O. text ----
-            if ko_timer > 0.0 {
+            if !paused && ko_timer > 0.0 {
                 let elapsed = KO_TIME - ko_timer;
                 let bar = 90.0 * ease(elapsed / 0.4);
                 d.draw_rectangle(0, 0, W, bar as i32, Color::BLACK);
@@ -4852,7 +4864,7 @@ fn main() {
             }
 
             // ---- round result banner (after the KO and victory cutscene) ----
-            if ko_timer <= 0.0 && vic.is_none() && pending_vic.is_none() {
+            if !paused && ko_timer <= 0.0 && vic.is_none() && pending_vic.is_none() {
                 if let Some(msg) = &result {
                     d.draw_rectangle(0, 190, W, 260, Color::new(0, 0, 0, 150));
                     center_text(&mut d, msg, 205, 50, Color::YELLOW);
