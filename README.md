@@ -20,7 +20,7 @@ The school project is (probably) still due. The duel game, however, is excellent
 - **Block and parry**, a knife melee attack, stagger on heavy hits and a combo counter.
 - **Ultimate meter** that fills as you fight and unleashes a cinematic super move.
 - **8 themed maps**, each with its own scenery and a map event.
-- **4 game modes**, multi-round matches (1 / 3 / 5 / 10 / 15) and a running tally.
+- **4 game modes**, best-of series (1 / 3 / 5 / 10 / 15) that end when one side clinches, and a running tally.
 - **10 death animations and 10 victory cutscenes**, chosen per player, with a RANDOM option.
 - **Customizable trails** (5 styles x 9 colors).
 - **CPU opponent with 8 personalities**, plus a **CPU vs CPU** spectator mode.
@@ -49,7 +49,7 @@ cargo run --release
 | Jump (press again in the air for a double jump; jump on a wall to wall jump) | `W` | `Up` |
 | Hold to charge a bigger jump | `S` | `Down` |
 | Ability 1 / Ability 2 | `F` / `G` | `,` (Comma) / `.` (Period) |
-| Knife | `E` | `/` (Slash) |
+| Knife (short cooldown) | `E` | `/` (Slash) |
 | Block (tap just as a hit lands to **parry**) | `Q` | `Right Shift` |
 | Ultimate (when the meter is full) | `V` | `Right Ctrl` |
 
@@ -66,17 +66,26 @@ cargo run --release
 | `C` | Players: human vs human, human vs CPU, CPU vs CPU |
 | `1` / `2` | Change the CPU personality for player 1 / 2 |
 | `Space` / `Enter` | Next round, or skip a victory cutscene |
-| `R` | Back to the menu |
-| `Esc` | Quit |
+| `R` | Back to the menu (also from the pause screen) |
+| `P` / `Esc` | Pause during a fight. `Esc` on the menu quits |
+| `H` | How to play |
+| `F11` | Fullscreen |
+| `O` | Mute sound effects |
+| `[` / `]` | CPU vs CPU playback speed |
+| `K` | CPU vs CPU: skip victory cutscenes |
+
+A gamepad works alongside the keyboard. Pad 1 is player 1 and pad 2 is player 2: left stick or d-pad to move, A to jump, X and B for the two abilities (they have to be different), Y for the knife, L1 to block, R1 for the ultimate, Start to ready up.
+
+The first round win of a series plays the victory cutscene. Later rounds just award the point. Shield blocks lava, burn, frost, and magnet pulls; a held block only chips those.
 
 ## Characters
 
 | Character | Passive | Ultimate |
 |---|---|---|
 | **Dasher** | +10% speed | **Overdrive**: faster, cooldowns x3, stronger knife for 6s |
-| **Bomber** | Bombs hit 20% harder | **Carpet Bomb**: bombs rain across the arena |
+| **Bomber** | Bombs and fireballs hit 20% harder | **Carpet Bomb**: bombs rain across the arena |
 | **Shielder** | Takes 15% less damage | **Aegis Nova**: 3s invincible plus a blast wave |
-| **Titan** | 130 HP, resists knockback, slower, no double jump | **Earthquake**: launches a grounded opponent for 25 damage |
+| **Titan** | 130 HP, resists knockback, slower, no double jump | **Earthquake**: 25 damage and a launch on the ground, still hits airborne foes |
 | **Ghost** | 85 HP, floaty, two air jumps | **Deep Freeze**: freezes the opponent from anywhere |
 | **Spark** | 90 HP, +25% speed, stronger knife | **Lightning Storm**: five bolts strike around the opponent |
 

@@ -1,4 +1,8 @@
+mod rules;
+mod sfx;
+
 use raylib::prelude::*;
+use rules::{combo_extra, cycle_distinct, explosive_mult, wins_needed, HitKind, HitOutcome};
 
 // ---- Alexander's movement numbers (unchanged feel) ----
 const W: i32 = 1280;
@@ -23,7 +27,7 @@ const BLAST_R: f32 = 120.0;
 const SHIELD_TIME: f32 = 1.2;
 const BOOM_TIME: f32 = 0.3;
 const MELEE_TIME: f32 = 0.25; // length of the knife swing
-const MELEE_CD: f32 = 0.0; // no cooldown (you still finish the swing in progress)
+const MELEE_CD: f32 = 0.45; // short gap after the swing so the knife is not free
 const MELEE_REACH: f32 = 80.0;
 const LAVA_DPS: f32 = 35.0;
 const MAX_SPEED: f32 = 1500.0; // knockback never launches anyone faster than this
@@ -222,7 +226,7 @@ impl Kind {
     fn passive(self) -> &'static str {
         match self {
             Kind::Dasher => "PASSIVE: +10% speed",
-            Kind::Bomber => "PASSIVE: bombs hit 20% harder",
+            Kind::Bomber => "PASSIVE: bombs and fireballs hit 20% harder",
             Kind::Shielder => "PASSIVE: takes 15% less damage",
             Kind::Titan => "PASSIVE: 130 HP, resists knockback, slow, no double jump",
             Kind::Ghost => "PASSIVE: 85 HP, floaty, two air jumps",
@@ -244,7 +248,7 @@ impl Kind {
             Kind::Dasher => "6s faster, cooldowns x3, knife x1.8",
             Kind::Bomber => "bombs rain across the arena",
             Kind::Shielder => "3s invincible + blast wave",
-            Kind::Titan => "foe on the ground: 25 dmg + launch",
+            Kind::Titan => "shockwave: 25 dmg grounded, still hits in the air",
             Kind::Ghost => "freeze them 2s from anywhere",
             Kind::Spark => "5 bolts strike around them",
         }
@@ -557,6 +561,7 @@ struct World {
     meteors: Vec<Meteor>,
     lasers: Vec<Laser>,
     pickups: Vec<Pickup>,
+    cues: Vec<sfx::Cue>,
     banner: Option<(String, Color, f32)>, // big ultimate / event text
     grav_scale: f32,                      // map events can make gravity lighter
     rng: Rng,
@@ -573,6 +578,7 @@ impl World {
             meteors: Vec::new(),
             lasers: Vec::new(),
             pickups: Vec::new(),
+            cues: Vec::new(),
             banner: None,
             grav_scale: 1.0,
             rng: Rng(2463534242),
@@ -588,6 +594,7 @@ impl World {
         self.meteors.clear();
         self.lasers.clear();
         self.pickups.clear();
+        self.cues.clear();
         self.banner = None;
         self.grav_scale = 1.0;
         self.fx = Fx { shake: 0.0, hitstop: 0.0, punch: 0.0, flash: 0.0 };
@@ -729,6 +736,79 @@ fn read_input(rl: &RaylibHandle, k: &Keys) -> Input {
     }
 }
 
+fn merge_input(a: Input, b: Input) -> Input {
+    Input {
+        left: a.left || b.left,
+        right: a.right || b.right,
+        down: a.down || b.down,
+        jump: a.jump || b.jump,
+        a1: a.a1 || b.a1,
+        a2: a.a2 || b.a2,
+        melee: a.melee || b.melee,
+        block_down: a.block_down || b.block_down,
+        ult: a.ult || b.ult,
+    }
+}
+
+fn pad_down(rl: &RaylibHandle, pad: i32, button: GamepadButton) -> bool {
+    rl.is_gamepad_available(pad) && rl.is_gamepad_button_down(pad, button)
+}
+
+fn pad_pressed(rl: &RaylibHandle, pad: i32, button: GamepadButton) -> bool {
+    rl.is_gamepad_available(pad) && rl.is_gamepad_button_pressed(pad, button)
+}
+
+fn read_pad(rl: &RaylibHandle, pad: i32) -> Input {
+    if !rl.is_gamepad_available(pad) {
+        return Input::default();
+    }
+    let x = rl.get_gamepad_axis_movement(pad, GamepadAxis::GAMEPAD_AXIS_LEFT_X);
+    let y = rl.get_gamepad_axis_movement(pad, GamepadAxis::GAMEPAD_AXIS_LEFT_Y);
+    let trigger = rl.get_gamepad_axis_movement(pad, GamepadAxis::GAMEPAD_AXIS_LEFT_TRIGGER);
+    Input {
+        left: x < -0.35 || pad_down(rl, pad, GamepadButton::GAMEPAD_BUTTON_LEFT_FACE_LEFT),
+        right: x > 0.35 || pad_down(rl, pad, GamepadButton::GAMEPAD_BUTTON_LEFT_FACE_RIGHT),
+        down: y > 0.35 || pad_down(rl, pad, GamepadButton::GAMEPAD_BUTTON_LEFT_FACE_DOWN),
+        jump: pad_pressed(rl, pad, GamepadButton::GAMEPAD_BUTTON_RIGHT_FACE_DOWN)
+            || pad_pressed(rl, pad, GamepadButton::GAMEPAD_BUTTON_LEFT_FACE_UP),
+        a1: pad_pressed(rl, pad, GamepadButton::GAMEPAD_BUTTON_RIGHT_FACE_LEFT),
+        a2: pad_pressed(rl, pad, GamepadButton::GAMEPAD_BUTTON_RIGHT_FACE_RIGHT),
+        melee: pad_pressed(rl, pad, GamepadButton::GAMEPAD_BUTTON_RIGHT_FACE_UP),
+        block_down: pad_down(rl, pad, GamepadButton::GAMEPAD_BUTTON_LEFT_TRIGGER_1) || trigger > 0.4,
+        ult: pad_pressed(rl, pad, GamepadButton::GAMEPAD_BUTTON_RIGHT_TRIGGER_1),
+    }
+}
+
+struct MenuPad {
+    up: bool,
+    down: bool,
+    left: bool,
+    right: bool,
+    ready: bool,
+}
+
+fn poll_menu_pad(rl: &RaylibHandle, pad: i32, latch: &mut (i32, i32)) -> MenuPad {
+    if !rl.is_gamepad_available(pad) {
+        *latch = (0, 0);
+        return MenuPad { up: false, down: false, left: false, right: false, ready: false };
+    }
+    let x = rl.get_gamepad_axis_movement(pad, GamepadAxis::GAMEPAD_AXIS_LEFT_X);
+    let y = rl.get_gamepad_axis_movement(pad, GamepadAxis::GAMEPAD_AXIS_LEFT_Y);
+    let sx = if x < -0.5 { -1 } else if x > 0.5 { 1 } else { 0 };
+    let sy = if y < -0.5 { -1 } else if y > 0.5 { 1 } else { 0 };
+    let edge = |now: i32, prev: i32, dir: i32| now == dir && prev != dir;
+    let menu = MenuPad {
+        up: edge(sy, latch.1, -1) || pad_pressed(rl, pad, GamepadButton::GAMEPAD_BUTTON_LEFT_FACE_UP),
+        down: edge(sy, latch.1, 1) || pad_pressed(rl, pad, GamepadButton::GAMEPAD_BUTTON_LEFT_FACE_DOWN),
+        left: edge(sx, latch.0, -1) || pad_pressed(rl, pad, GamepadButton::GAMEPAD_BUTTON_LEFT_FACE_LEFT),
+        right: edge(sx, latch.0, 1) || pad_pressed(rl, pad, GamepadButton::GAMEPAD_BUTTON_LEFT_FACE_RIGHT),
+        ready: pad_pressed(rl, pad, GamepadButton::GAMEPAD_BUTTON_MIDDLE_RIGHT)
+            || pad_pressed(rl, pad, GamepadButton::GAMEPAD_BUTTON_RIGHT_FACE_DOWN),
+    };
+    *latch = (sx, sy);
+    menu
+}
+
 // =====================================================================
 // CPU personalities
 // =====================================================================
@@ -814,8 +894,57 @@ fn ability_ok(ab: Ability, me: &Player, foe: &Player, dist: f32, foe_attacking: 
     }
 }
 
+#[derive(Clone, Copy)]
+struct Threat {
+    avoid_x: Option<f32>,
+    jump: bool,
+    shot: bool,
+}
+
+fn sense_threat(my_idx: usize, me: &Player, w: &World) -> Threat {
+    let (mx, my) = me.center();
+    let mut avoid_x = None;
+    let mut best = 150.0f32;
+    for s in &w.strikes {
+        if s.struck {
+            continue;
+        }
+        let d = (mx - s.x).abs();
+        if d < best {
+            best = d;
+            avoid_x = Some(s.x);
+        }
+    }
+    for m in &w.meteors {
+        if m.falling {
+            continue;
+        }
+        let d = (mx - m.tx).abs();
+        if d < best {
+            best = d;
+            avoid_x = Some(m.tx);
+        }
+    }
+    let mut shot = false;
+    for b in &w.projs {
+        if b.owner == my_idx {
+            continue;
+        }
+        let dx = mx - b.x;
+        let closing = b.vx.abs() > 40.0 && dx.signum() == b.vx.signum();
+        if closing && dx.abs() < 320.0 && (my - b.y).abs() < 90.0 {
+            shot = true;
+            if avoid_x.is_none() {
+                avoid_x = Some(b.x);
+            }
+        }
+    }
+    let jump = w.lasers.iter().any(|l| !l.fired && (my - l.y).abs() < 55.0);
+    Threat { avoid_x, jump, shot }
+}
+
 // the CPU brain: reads the same game state a player sees and builds an Input
-fn bot_input(me: &Player, foe: &Player, rng: &mut Rng, prof: &Profile, t: f32, seed: f32) -> Input {
+fn bot_input(me: &Player, foe: &Player, threat: Threat, rng: &mut Rng, prof: &Profile, t: f32, seed: f32) -> Input {
     let mut i = Input::default();
     let (mx, my) = me.center();
     let (fx, fy) = foe.center();
@@ -825,9 +954,18 @@ fn bot_input(me: &Player, foe: &Player, rng: &mut Rng, prof: &Profile, t: f32, s
     let foe_attacking = foe.melee_t > 0.0 || foe.dash_t > 0.0 || foe.slam;
     let react = rng.next() < prof.react; // slow profiles skip decisions some frames
 
-    // ---- movement: hold the preferred distance ----
+    // ---- movement: hold the preferred distance, unless a telegraph is on us ----
     let gap = dist - prof.dist;
-    let mut want = if gap > 30.0 {
+    let mut want = if let Some(ax) = threat.avoid_x {
+        if (mx - ax).abs() < 130.0 {
+            let away = mx - ax;
+            if away.abs() < 8.0 { me.facing } else { away.signum() }
+        } else if gap > 30.0 {
+            dx.signum()
+        } else {
+            0.0
+        }
+    } else if gap > 30.0 {
         dx.signum()
     } else if gap < -30.0 && rng.next() < prof.flee {
         -dx.signum()
@@ -844,8 +982,17 @@ fn bot_input(me: &Player, foe: &Player, rng: &mut Rng, prof: &Profile, t: f32, s
         i.left = true;
     }
 
-    // ---- jumping: reach the foe, climb walls, double jump ----
-    if me.on_ground {
+    // ---- jumping: reach the foe, climb walls, double jump, charge a big hop ----
+    let charging = me.on_ground && dy < -120.0 && (t * 0.85 + seed).sin() > 0.82;
+    if charging {
+        i.down = true;
+    } else if me.charge > 0.4 {
+        // keep crouch held this frame so the charged jump is not wiped before it fires
+        i.down = true;
+        i.jump = true;
+    } else if threat.jump && me.on_ground {
+        i.jump = true;
+    } else if me.on_ground {
         if dy < -80.0 && rng.next() < 0.06 {
             i.jump = true;
         } else if me.vx.abs() < 5.0 && want != 0.0 && rng.next() < 0.1 {
@@ -878,10 +1025,20 @@ fn bot_input(me: &Player, foe: &Player, rng: &mut Rng, prof: &Profile, t: f32, s
         if me.ult >= ULT_MAX && dist < 650.0 && rng.next() < prof.ult {
             i.ult = true;
         }
+        // incoming shot or swing: spend blink, shield, or hop instead of walking into it
+        if (threat.shot || foe_attacking) && rng.next() < prof.smart.max(0.45) {
+            let useful = |ab: Ability| matches!(ab, Ability::Shield | Ability::Blink | Ability::Hop);
+            if me.cd1 <= 0.0 && useful(loadout[0]) {
+                i.a1 = true;
+            } else if me.cd2 <= 0.0 && useful(loadout[1]) {
+                i.a2 = true;
+            }
+        }
     }
 
     // ---- defending ----
-    if foe_attacking && dist < 170.0 && rng.next() < prof.block * if react { 1.0 } else { 0.4 } {
+    let threatened = foe_attacking || threat.shot || threat.avoid_x.is_some();
+    if threatened && dist < 420.0 && rng.next() < prof.block * if react { 1.0 } else { 0.4 } {
         i.block_down = true;
     }
     i
@@ -945,6 +1102,7 @@ struct Player {
     haste_t: f32,
     dead_t: f32,
     invuln: bool, // the champion during a victory cutscene
+    landed_hit: bool, // a strike connected this frame (for the hit sound)
 }
 
 impl Player {
@@ -1000,6 +1158,7 @@ impl Player {
             haste_t: 0.0,
             dead_t: 0.0,
             invuln: false,
+            landed_hit: false,
         };
         p.apply_setup(setup);
         p
@@ -1007,7 +1166,8 @@ impl Player {
 
     fn apply_setup(&mut self, s: &Setup) {
         self.kind = KINDS[s.kind];
-        self.abilities = [ABILITIES[s.abil[0]], ABILITIES[s.abil[1]]];
+        let second = if s.abil[1] == s.abil[0] { cycle_distinct(s.abil[0], s.abil[0], ABILITIES.len(), 1) } else { s.abil[1] };
+        self.abilities = [ABILITIES[s.abil[0]], ABILITIES[second]];
         self.trail_style = s.trail;
         self.trail_color = s.color;
     }
@@ -1034,33 +1194,71 @@ impl Player {
         m
     }
 
+    fn guard_state(&self) -> rules::Guard {
+        if self.shield_t > 0.0 {
+            rules::Guard::Shield
+        } else if self.parry_t > 0.0 {
+            rules::Guard::Parry
+        } else if self.block_held {
+            rules::Guard::Block
+        } else {
+            rules::Guard::Open
+        }
+    }
+
     // damage + knockback. Shield blocks everything, a well-timed block parries,
-    // a held block takes a fraction of the hit and no knockback.
-    fn hurt(&mut self, dmg: f32, kx: f32, ky: f32) {
-        if self.dead_t > 0.0 || self.shield_t > 0.0 || self.invuln {
-            return;
+    // a held block takes a fraction of the hit and no knockback. Dots (burn, lava)
+    // use the same defenses without parry or knockback.
+    fn receive(&mut self, dmg: f32, kx: f32, ky: f32, kind: HitKind) -> HitOutcome {
+        let fx = rules::resolve_hit(rules::Incoming {
+            dmg,
+            kx,
+            ky,
+            kind,
+            guard: self.guard_state(),
+            dmg_taken: self.kind.dmg_taken(),
+            kb_resist: self.kind.kb_resist(),
+            dead: self.dead_t > 0.0,
+            invuln: self.invuln,
+        });
+        match fx.outcome {
+            HitOutcome::Ignored => {}
+            HitOutcome::Parried => {
+                self.parry_t = 0.0;
+                self.parried = true;
+            }
+            HitOutcome::Blocked | HitOutcome::Hit => {
+                self.hp = (self.hp - fx.dmg).max(0.0);
+                if kind == HitKind::Strike {
+                    self.vx = (self.vx + fx.kx).clamp(-MAX_SPEED, MAX_SPEED);
+                    if fx.ky != 0.0 {
+                        self.vy = fx.ky.clamp(-MAX_SPEED, MAX_SPEED);
+                        self.on_ground = false;
+                    }
+                    self.hurt_t = 0.25;
+                    if fx.outcome == HitOutcome::Hit {
+                        self.landed_hit = true;
+                    }
+                    if fx.outcome == HitOutcome::Blocked {
+                        self.blocked = true;
+                    }
+                } else {
+                    self.hurt_t = self.hurt_t.max(0.1);
+                }
+                if fx.interrupt_mend {
+                    self.regen_t = 0.0;
+                }
+            }
         }
-        if self.parry_t > 0.0 {
-            self.parry_t = 0.0;
-            self.parried = true;
-            return;
-        }
-        let mut dmg = dmg * self.kind.dmg_taken();
-        let mut kx = kx * self.kind.kb_resist();
-        let mut ky = ky * self.kind.kb_resist();
-        if self.block_held {
-            dmg *= 0.3;
-            kx *= 0.2;
-            ky = 0.0;
-            self.blocked = true;
-        }
-        self.hp = (self.hp - dmg).max(0.0);
-        self.vx = (self.vx + kx).clamp(-MAX_SPEED, MAX_SPEED);
-        if ky != 0.0 {
-            self.vy = ky.clamp(-MAX_SPEED, MAX_SPEED);
-            self.on_ground = false;
-        }
-        self.hurt_t = 0.25;
+        fx.outcome
+    }
+
+    fn hurt(&mut self, dmg: f32, kx: f32, ky: f32) -> HitOutcome {
+        self.receive(dmg, kx, ky, HitKind::Strike)
+    }
+
+    fn chip(&mut self, dmg: f32) -> HitOutcome {
+        self.receive(dmg, 0.0, 0.0, HitKind::Dot)
     }
 }
 
@@ -1557,10 +1755,12 @@ fn use_ability(ab: Ability, me: &mut Player, foe: &mut Player, my_idx: usize, so
         Ability::Magnet => {
             let (fx, fy) = foe.center();
             let dist = ((fx - cx).powi(2) + (fy - cy).powi(2)).sqrt();
-            if dist < 650.0 {
+            let can_pull = foe.dead_t <= 0.0 && foe.shield_t <= 0.0 && !foe.invuln;
+            if can_pull && dist < 650.0 {
                 let dir: f32 = if fx > cx { -1.0 } else { 1.0 };
-                foe.vx = (dir * 1100.0).clamp(-MAX_SPEED, MAX_SPEED);
-                foe.vy = -140.0;
+                let power = if foe.block_held { 0.35 } else { 1.0 };
+                foe.vx = (dir * 1100.0 * power).clamp(-MAX_SPEED, MAX_SPEED);
+                foe.vy = -140.0 * power;
                 foe.on_ground = false;
                 for k in 0..10 {
                     let f = k as f32 / 10.0;
@@ -1632,18 +1832,21 @@ fn use_ult(me: &mut Player, foe: &mut Player, my_idx: usize, w: &mut World) {
                 w.burst(x, H as f32 - FLOOR_H, 4, Color::new(120, 100, 80, 255), 380.0, 0.9, 12.0, Shape::Square, 900.0);
             }
             w.ring(cx, me.y + SIZE, 600.0, Color::new(255, 190, 80, 255));
-            if foe.on_ground && foe.dead_t <= 0.0 {
-                foe.hurt(25.0, 0.0, -650.0);
-                foe.stun_t = 0.6;
+            if foe.dead_t <= 0.0 {
+                if foe.on_ground {
+                    foe.hurt(25.0, 0.0, -650.0);
+                    foe.stun_t = 0.6;
+                } else {
+                    foe.hurt(18.0, 0.0, -280.0);
+                    foe.stun_t = foe.stun_t.max(0.3);
+                }
             }
         }
         Kind::Ghost => {
             let (fx, fy) = foe.center();
-            if foe.shield_t <= 0.0 && foe.dead_t <= 0.0 {
+            if foe.hurt(10.0, 0.0, 0.0) == HitOutcome::Hit {
                 foe.frozen_t = 2.0;
                 foe.vx = 0.0;
-                foe.hp = (foe.hp - 10.0).max(0.0);
-                foe.hurt_t = 0.15;
             }
             w.ring(fx, fy, 260.0, Color::new(170, 235, 255, 255));
             w.burst(fx, fy, 30, Color::new(190, 240, 255, 255), 500.0, 0.8, 8.0, Shape::Star, 200.0);
@@ -1703,7 +1906,7 @@ fn explode(players: &mut [Player; 2], owner: usize, cx: f32, cy: f32, w: &mut Wo
     w.shake(12.0);
     w.fx.punch = w.fx.punch.max(0.04);
     w.fx.flash = w.fx.flash.max(0.15);
-    let mult = if players[owner].kind == Kind::Bomber { 1.2 } else { 1.0 };
+    let mult = explosive_mult(players[owner].kind == Kind::Bomber);
     let reach = BLAST_R + SIZE / 2.0;
     for j in 0..2 {
         let p = &mut players[j];
@@ -1735,10 +1938,10 @@ fn proj_impact(b: &Proj, hit_foe: bool, players: &mut [Player; 2], w: &mut World
             let ice = Color::new(170, 235, 255, 255);
             if hit_foe {
                 let p = &mut players[foe];
-                p.hp = (p.hp - 5.0).max(0.0);
-                p.frozen_t = FROZEN_TIME;
-                p.vx = 0.0;
-                p.hurt_t = 0.15;
+                if p.hurt(5.0, 0.0, 0.0) == HitOutcome::Hit {
+                    p.frozen_t = FROZEN_TIME;
+                    p.vx = 0.0;
+                }
             }
             w.ring(b.x, b.y, 80.0, ice);
             w.burst(b.x, b.y, 22, ice, 360.0, 0.6, 8.0, Shape::Star, 200.0);
@@ -1748,9 +1951,9 @@ fn proj_impact(b: &Proj, hit_foe: bool, players: &mut [Player; 2], w: &mut World
         ProjKind::Fire => {
             if hit_foe {
                 let dir = if b.vx >= 0.0 { 1.0 } else { -1.0 };
+                let mult = explosive_mult(players[b.owner].kind == Kind::Bomber);
                 let p = &mut players[foe];
-                if p.shield_t <= 0.0 {
-                    p.hurt(14.0, dir * 300.0, -150.0);
+                if p.hurt(14.0 * mult, dir * 300.0, -150.0) == HitOutcome::Hit {
                     p.burn_t = BURN_TIME;
                 }
             }
@@ -2139,7 +2342,7 @@ fn update_player(inp: &Input, me: &mut Player, foe: &mut Player, my_idx: usize, 
     // ---- burning, healing, buff and status particles ----
     if me.burn_t > 0.0 {
         me.burn_t -= dt;
-        me.hp = (me.hp - 4.0 * dt).max(0.0);
+        me.chip(4.0 * dt);
         if w.rng.next() < 0.7 {
             let mut q = Particle::new(cx + w.rng.range(-22.0, 22.0), cy + w.rng.range(-10.0, 25.0), w.rng.range(-20.0, 20.0), -50.0, 0.5, 8.0, Color::new(255, 140 + (w.rng.next() * 100.0) as u8, 30, 230), Shape::Circle);
             q.grav = -80.0;
@@ -2225,6 +2428,7 @@ fn update_player(inp: &Input, me: &mut Player, foe: &mut Player, my_idx: usize, 
             if me.charge > 0.0 {
                 let power = 1.0 + me.charge * (MAX_CHARGE - 1.0);
                 launch(me, power);
+                w.cues.push(sfx::Cue::Jump);
             } else {
                 me.tap_timer = TAP_CROUCH;
                 me.crouch = CROUCH;
@@ -2236,11 +2440,13 @@ fn update_player(inp: &Input, me: &mut Player, foe: &mut Player, my_idx: usize, 
             me.vx = kick * WALL_KICK;
             me.facing = kick;
             me.air_jumps = me.kind.air_jumps();
+            w.cues.push(sfx::Cue::Jump);
             w.burst(cx - kick * 30.0, cy, 8, Color::new(230, 230, 230, 220), 200.0, 0.35, 5.0, Shape::Circle, 100.0);
         } else if !me.on_ground && me.air_jumps > 0 && me.tap_timer <= 0.0 {
             // double jump
             me.air_jumps -= 1;
             me.vy = -(2.0 * GRAVITY * JUMP * 0.85).sqrt();
+            w.cues.push(sfx::Cue::Jump);
             w.ring(cx, me.y + SIZE, 55.0, Color::WHITE);
             w.burst(cx, me.y + SIZE, 8, Color::new(230, 230, 230, 200), 180.0, 0.35, 5.0, Shape::Circle, 100.0);
         }
@@ -2249,6 +2455,7 @@ fn update_player(inp: &Input, me: &mut Player, foe: &mut Player, my_idx: usize, 
         me.tap_timer -= dt;
         if me.tap_timer <= 0.0 {
             launch(me, 1.0);
+            w.cues.push(sfx::Cue::Jump);
         }
     }
 
@@ -2265,6 +2472,7 @@ fn update_player(inp: &Input, me: &mut Player, foe: &mut Player, my_idx: usize, 
     if acting && inp.ult && me.ult >= ULT_MAX {
         me.ult = 0.0;
         use_ult(me, foe, my_idx, w);
+        w.cues.push(sfx::Cue::Ult);
     }
     if me.slam_arm && me.vy >= 0.0 {
         me.slam_arm = false;
@@ -2285,6 +2493,7 @@ fn update_player(inp: &Input, me: &mut Player, foe: &mut Player, my_idx: usize, 
         me.melee_t = MELEE_TIME;
         me.melee_cd = MELEE_CD;
         me.melee_hit = false;
+        w.cues.push(sfx::Cue::Swing);
     }
 
     step(me, solids, dt, w.grav_scale);
@@ -3292,7 +3501,7 @@ const VICTORY_BLURBS: [&str; 11] = [
 
 // how far the camera zooms in, and how long each cutscene lasts
 const VIC_ZOOM: [f32; 10] = [1.35, 1.4, 1.0, 1.4, 1.5, 1.5, 1.7, 1.0, 1.15, 1.0];
-const VIC_DUR: [f32; 10] = [4.8, 3.4, 3.6, 3.6, 3.4, 3.6, 3.4, 3.0, 3.2, 3.6];
+const VIC_DUR: [f32; 10] = [3.1, 2.2, 2.3, 2.3, 2.2, 2.3, 2.2, 2.0, 2.1, 2.3];
 
 struct Vic {
     idx: usize,
@@ -3713,9 +3922,32 @@ fn respawn(p: &mut Player, setup: &Setup, x: f32, facing: f32, keys: Keys, w: &m
     w.burst(x + SIZE / 2.0, p.y + SIZE / 2.0, 16, p.kind.color(), 300.0, 0.5, 6.0, Shape::Star, 0.0);
 }
 
+fn flush_cues(w: &mut World, bank: &Option<sfx::Bank>, muted: bool) {
+    if muted {
+        w.cues.clear();
+        return;
+    }
+    if let Some(bank) = bank {
+        let mut seen = [false; 8];
+        for cue in w.cues.drain(..) {
+            let slot = cue as usize;
+            if seen[slot] {
+                continue;
+            }
+            seen[slot] = true;
+            bank.play(cue);
+        }
+    } else {
+        w.cues.clear();
+    }
+}
+
 fn main() {
-    let (mut rl, thread) = raylib::init().size(W, H).title("Pausi").build();
+    let (mut rl, thread) = raylib::init().size(W, H).title("Pausi").resizable().build();
     rl.set_target_fps(60);
+    rl.set_exit_key(None);
+    let audio = RaylibAudio::init_audio_device().ok();
+    let sfx_bank = audio.as_ref().and_then(sfx::Bank::load);
 
     let keys = [
         Keys {
@@ -3781,6 +4013,14 @@ fn main() {
     let mut vic: Option<Vic> = None; // the winner's victory cutscene, while it plays
     let mut pending_vic: Option<usize> = None; // winner waiting for the KO to finish
     let mut vic_done = false;
+    let mut vic_seen = false;
+    let mut paused = false;
+    let mut help = false;
+    let mut muted = false;
+    let mut skip_cuts = false;
+    let mut scale_i = 1usize;
+    let sim_scales = [0.5f32, 1.0, 2.0];
+    let mut pad_latch = [(0i32, 0i32); 2];
 
     while !rl.window_should_close() {
         let dt = rl.get_frame_time().min(0.05);
@@ -3788,7 +4028,42 @@ fn main() {
         let mode = MODES[mode_idx];
         let cpu = [cpu_mode == 2, cpu_mode >= 1]; // which players are bots
 
+        if rl.is_key_pressed(KeyboardKey::KEY_F11) {
+            rl.toggle_fullscreen();
+        }
+        if rl.is_key_pressed(KeyboardKey::KEY_O) {
+            muted = !muted;
+        }
+        if !selecting && (rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) || rl.is_key_pressed(KeyboardKey::KEY_P)) {
+            paused = !paused;
+        }
+        if cpu[0] && cpu[1] {
+            if rl.is_key_pressed(KeyboardKey::KEY_RIGHT_BRACKET) {
+                scale_i = (scale_i + 1) % sim_scales.len();
+            }
+            if rl.is_key_pressed(KeyboardKey::KEY_LEFT_BRACKET) {
+                scale_i = (scale_i + sim_scales.len() - 1) % sim_scales.len();
+            }
+            if rl.is_key_pressed(KeyboardKey::KEY_K) {
+                skip_cuts = !skip_cuts;
+            }
+        }
+        let sim_scale = if cpu[0] && cpu[1] { sim_scales[scale_i] } else { 1.0 };
+
         // screen effects calm down in real time
+        if paused {
+            if rl.is_key_pressed(KeyboardKey::KEY_R) {
+                paused = false;
+                idle_t = 0.0;
+                selecting = true;
+                ready = [false, false];
+                w.clear();
+                vic = None;
+                pending_vic = None;
+                theme_idx = start_theme;
+                map = make_map(THEMES[theme_idx]);
+            }
+        } else {
         w.fx.shake *= 0.86f32.powf(dt * 60.0);
         if w.fx.shake < 0.3 {
             w.fx.shake = 0.0;
@@ -3807,17 +4082,26 @@ fn main() {
 
         if selecting {
             // ---- loadout menus ----
+            if rl.is_key_pressed(KeyboardKey::KEY_H) {
+                help = !help;
+            }
+            if help && rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
+                help = false;
+            } else if !help && rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
+                break;
+            }
             let mut preview_death: Option<(usize, usize)> = None;
             for i in 0..2 {
                 let k = keys[i];
-                if !ready[i] {
-                    if rl.is_key_pressed(k.up) {
+                let pad = poll_menu_pad(&rl, i as i32, &mut pad_latch[i]);
+                if !ready[i] && !help && !cpu[i] {
+                    if rl.is_key_pressed(k.up) || pad.up {
                         row[i] = cycle(row[i], ROWS, -1);
                     }
-                    if rl.is_key_pressed(k.down) {
+                    if rl.is_key_pressed(k.down) || pad.down {
                         row[i] = cycle(row[i], ROWS, 1);
                     }
-                    let dir = rl.is_key_pressed(k.right) as i32 - rl.is_key_pressed(k.left) as i32;
+                    let dir = rl.is_key_pressed(k.right) as i32 - rl.is_key_pressed(k.left) as i32 + pad.right as i32 - pad.left as i32;
                     if dir != 0 {
                         let s = &mut setups[i];
                         match row[i] {
@@ -3825,8 +4109,8 @@ fn main() {
                                 s.kind = cycle(s.kind, KINDS.len(), dir);
                                 s.abil = KINDS[s.kind].default_loadout();
                             }
-                            1 => s.abil[0] = cycle(s.abil[0], ABILITIES.len(), dir),
-                            2 => s.abil[1] = cycle(s.abil[1], ABILITIES.len(), dir),
+                            1 => s.abil[0] = cycle_distinct(s.abil[0], s.abil[1], ABILITIES.len(), dir),
+                            2 => s.abil[1] = cycle_distinct(s.abil[1], s.abil[0], ABILITIES.len(), dir),
                             3 => s.trail = cycle(s.trail, TRAIL_STYLES.len(), dir),
                             4 => s.color = cycle(s.color, TRAIL_COLOR_NAMES.len(), dir),
                             5 => {
@@ -3837,7 +4121,7 @@ fn main() {
                         }
                     }
                 }
-                if rl.is_key_pressed(ready_keys[i]) {
+                if !help && (rl.is_key_pressed(ready_keys[i]) || (!cpu[i] && pad.ready)) {
                     ready[i] = !ready[i];
                 }
             }
@@ -3852,7 +4136,7 @@ fn main() {
                 1 => ready[0],
                 _ => ready[0] || ready[1],
             };
-            if !both_ready {
+            if !both_ready && !help {
                 if rl.is_key_pressed(KeyboardKey::KEY_M) {
                     theme_idx = cycle(theme_idx, THEMES.len(), 1);
                     map = make_map(THEMES[theme_idx]);
@@ -3889,7 +4173,7 @@ fn main() {
             }
             update_particles(&mut w.parts, dt);
 
-            if both_ready {
+            if both_ready && !help {
                 players = [
                     Player::new(&setups[0], map.spawns[0], 1.0, keys[0]),
                     Player::new(&setups[1], map.spawns[1], -1.0, keys[1]),
@@ -3908,12 +4192,17 @@ fn main() {
                     cpu_now[i] = if cpu_prof[i] >= 8 { (w.rng.next() * 8.0) as usize % 8 } else { cpu_prof[i] };
                 }
                 idle_t = 0.0;
+                vic_seen = false;
+                paused = false;
                 selecting = false;
             }
         } else {
             // ---- time control: KO slow-motion and hit-stop freeze frames ----
             let ko_active = ko_timer > 0.0;
-            let mut dt_sim = dt;
+            let mut dt_sim = dt * sim_scale;
+            if skip_cuts && ko_timer > 0.0 {
+                ko_timer = 0.0;
+            }
             if ko_active {
                 ko_timer = (ko_timer - dt).max(0.0);
                 dt_sim = dt * KO_SLOW;
@@ -3938,14 +4227,19 @@ fn main() {
                         play_death(setups[li].death, px, py, col, &mut w);
                         players[li].dead_t = 99.0;
                     }
-                    vic = Some(victory_start(setups[wi].victory, wi, &mut players, &map, &mut w));
+                    if vic_seen || skip_cuts {
+                        w.banner = Some(("ROUND POINT".to_string(), Color::YELLOW, 0.8));
+                    } else {
+                        vic = Some(victory_start(setups[wi].victory, wi, &mut players, &map, &mut w));
+                        vic_seen = true;
+                    }
                     pending_vic = None;
                 }
             }
 
             if let Some(v) = vic.as_mut() {
                 // ---- victory cutscene (press SPACE / ENTER to skip) ----
-                let skip = rl.is_key_pressed(KeyboardKey::KEY_SPACE) || rl.is_key_pressed(KeyboardKey::KEY_ENTER);
+                let skip = skip_cuts || rl.is_key_pressed(KeyboardKey::KEY_SPACE) || rl.is_key_pressed(KeyboardKey::KEY_ENTER);
                 let finished = victory_update(v, &mut players, &map, &mut w, dt);
                 if finished || skip {
                     victory_finish(v.who, &mut players, &map);
@@ -3971,16 +4265,17 @@ fn main() {
                     }
 
                     // ---- inputs: keyboard or CPU ----
+                    let threats = [sense_threat(0, &players[0], &w), sense_threat(1, &players[1], &w)];
                     let inputs = [
                         if cpu[0] {
-                            bot_input(&players[0], &players[1], &mut w.rng, &cpu_profile(cpu_now[0]), t, 0.0)
+                            bot_input(&players[0], &players[1], threats[0], &mut w.rng, &cpu_profile(cpu_now[0]), t, 0.0)
                         } else {
-                            read_input(&rl, &keys[0])
+                            merge_input(read_input(&rl, &keys[0]), read_pad(&rl, 0))
                         },
                         if cpu[1] {
-                            bot_input(&players[1], &players[0], &mut w.rng, &cpu_profile(cpu_now[1]), t, 3.7)
+                            bot_input(&players[1], &players[0], threats[1], &mut w.rng, &cpu_profile(cpu_now[1]), t, 3.7)
                         } else {
-                            read_input(&rl, &keys[1])
+                            merge_input(read_input(&rl, &keys[1]), read_pad(&rl, 1))
                         },
                     ];
                     for i in 0..2 {
@@ -4017,8 +4312,7 @@ fn main() {
                     if let Some(hz) = hazard_now {
                         for p in players.iter_mut() {
                             if p.dead_t <= 0.0 && overlaps(&p.rect(), &hz) {
-                                p.hp = (p.hp - LAVA_DPS * dt_sim).max(0.0);
-                                p.hurt_t = 0.1;
+                                p.chip(LAVA_DPS * dt_sim);
                                 if w.rng.next() < 0.5 {
                                     let (cx, cy) = p.center();
                                     let mut q = Particle::new(cx + w.rng.range(-20.0, 20.0), cy + 25.0, w.rng.range(-40.0, 40.0), -120.0, 0.5, 6.0, Color::new(255, 150, 30, 255), Shape::Circle);
@@ -4040,8 +4334,13 @@ fn main() {
                     // ---- parries and blocks ----
                     for i in 0..2 {
                         let (px, py) = players[i].center();
+                        if players[i].landed_hit {
+                            players[i].landed_hit = false;
+                            w.cues.push(sfx::Cue::Hit);
+                        }
                         if players[i].parried {
                             players[i].parried = false;
+                            w.cues.push(sfx::Cue::Parry);
                             let att = 1 - i;
                             players[att].stun_t = 0.8;
                             players[att].vx = 0.0;
@@ -4056,6 +4355,7 @@ fn main() {
                         }
                         if players[i].blocked {
                             players[i].blocked = false;
+                            w.cues.push(sfx::Cue::Block);
                             let f = players[i].facing;
                             w.burst(px + f * 40.0, py, 10, Color::new(200, 230, 255, 255), 350.0, 0.3, 4.0, Shape::Streak, 0.0);
                             w.ring(px + f * 40.0, py, 50.0, Color::new(200, 230, 255, 255));
@@ -4075,11 +4375,7 @@ fn main() {
                             }
                             rd.combo_t[att] = COMBO_WINDOW;
                             rd.combo_show[att] = 1.6;
-                            let mut bonus = ((rd.combo[att] as f32 - 1.0) * 0.1).min(0.5);
-                            if players[att].power_t > 0.0 {
-                                bonus += 0.5;
-                            }
-                            let extra = drop * bonus;
+                            let extra = combo_extra(drop, rd.combo[att], players[att].power_t > 0.0);
                             if extra > 0.0 {
                                 players[i].hp = (players[i].hp - extra).max(0.0);
                             }
@@ -4191,7 +4487,7 @@ fn main() {
                             if let Some(i) = win {
                                 wins[i] += 1;
                             }
-                            series_over = round_no >= round_options[rounds_idx];
+                            series_over = rules::series_over(wins, round_no, round_options[rounds_idx]);
                             let reason = if ko { "" } else if mode == Mode::Hill { " (HILL POINTS)" } else { " (TIME UP)" };
                             result = Some(match win {
                                 Some(i) => format!("P{} ({}) WINS THE ROUND{}", i + 1, players[i].kind.name(), reason),
@@ -4203,6 +4499,7 @@ fn main() {
                             pending_vic = win; // the winner gets a victory cutscene (not on a draw)
                             if ko {
                                 ko_timer = KO_TIME;
+                                w.cues.push(sfx::Cue::Ko);
                                 // the loser(s) go out with their chosen death animation
                                 let mut fx = 0.0;
                                 let mut fy = 0.0;
@@ -4237,7 +4534,7 @@ fn main() {
                 // in CPU vs CPU the match plays itself: next round after a few seconds,
                 // and back to the menu a bit after the final round
                 if pending_vic.is_none() && cpu[0] && cpu[1] {
-                    idle_t += dt;
+                    idle_t += dt * sim_scale;
                 } else {
                     idle_t = 0.0;
                 }
@@ -4274,6 +4571,10 @@ fn main() {
                 }
             }
         }
+
+        }
+
+        flush_cues(&mut w, &sfx_bank, muted);
 
         // ---- draw ----
         let theme = THEMES[theme_idx];
@@ -4363,7 +4664,7 @@ fn main() {
             center_text(
                 &mut d,
                 &format!(
-                    "ROUNDS: {} (N)    MODE: {} (B)    PLAYERS: {} (C)",
+                    "BEST OF {} (N)    MODE: {} (B)    PLAYERS: {} (C)",
                     round_options[rounds_idx],
                     mode.name(),
                     match cpu_mode {
@@ -4383,6 +4684,29 @@ fn main() {
                 _ => "CPU vs CPU: keys 1 and 2 change their personalities - press F or L to start and watch",
             };
             center_text(&mut d, go, 664, 22, Color::LIME);
+            center_text(&mut d, "H help    F11 fullscreen    O mute    ESC quit    gamepads welcome", 692, 18, Color::LIGHTGRAY);
+            if help {
+                d.draw_rectangle(80, 90, W - 160, 560, Color::new(8, 8, 12, 235));
+                d.draw_rectangle_lines(80, 90, W - 160, 560, Color::WHITE);
+                center_text(&mut d, "HOW TO PLAY", 110, 40, Color::YELLOW);
+                let lines = [
+                    "Move with A/D (P1) or arrows / left stick (P2). W or A-button jumps.",
+                    "Jump again in the air to double jump. Jump on a wall to kick off it.",
+                    "Hold S or down to charge a bigger jump, then release into the jump.",
+                    "F/G or X/B are your two abilities. They must be different.",
+                    "E or Y is the knife (short cooldown). Q or L1 blocks. Tap block to parry.",
+                    "V or R1 fires your ultimate once the meter is full.",
+                    "Shield stops lava, burn, frost, and pulls. A block only chips them.",
+                    "Best of 3 ends at 2 wins, best of 5 at 3. The series stops when someone clinches.",
+                    "During a fight: P or ESC pauses. R on the pause screen returns here.",
+                    "CPU vs CPU: [ ] changes speed, K skips the victory cutscenes.",
+                    "The first win of a series plays a cutscene. Later rounds just bank the point.",
+                    "Press H or ESC to close this.",
+                ];
+                for (n, line) in lines.iter().enumerate() {
+                    text(&mut d, line, 120, 170 + n as i32 * 32, 22, Color::WHITE);
+                }
+            }
         } else {
             // ---- the cinematic camera: shake, zoom punch, KO zoom ----
             let ko_prog = if ko_timer > 0.0 { ease(1.0 - ko_timer / KO_TIME) } else { 0.0 };
@@ -4424,7 +4748,13 @@ fn main() {
             ];
             draw_hud(&mut d, &players, mode, &rd, t, &tags);
             // round counter and running tally, top center
-            center_text(&mut d, &format!("ROUND {} / {}", round_no, round_options[rounds_idx]), 12, 24, Color::WHITE);
+            center_text(
+                &mut d,
+                &format!("ROUND {}   FIRST TO {}", round_no, wins_needed(round_options[rounds_idx])),
+                12,
+                24,
+                Color::WHITE,
+            );
             center_text(&mut d, &format!("{}  -  {}", wins[0], wins[1]), 42, 44, Color::YELLOW);
             center_text(&mut d, &format!("{} - {}", theme.name(), mode.name()), 92, 18, Color::LIGHTGRAY);
             match mode {
@@ -4469,6 +4799,16 @@ fn main() {
             let p2b = "COMMA/PERIOD abilities  SLASH knife  R-SHIFT block  R-CTRL ult";
             text(&mut d, p2a, W - text_width(p2a, 20) - 15, H - 56, 20, Color::WHITE);
             text(&mut d, p2b, W - text_width(p2b, 20) - 15, H - 30, 20, Color::WHITE);
+            if cpu[0] && cpu[1] {
+                let speed = if sim_scale < 0.75 { "0.5x" } else if sim_scale > 1.5 { "2x" } else { "1x" };
+                center_text(
+                    &mut d,
+                    &format!("SPECTATE  {}   [ ] speed    K cutscenes {}", speed, if skip_cuts { "OFF" } else { "ON" }),
+                    H - 80,
+                    18,
+                    Color::new(180, 220, 255, 255),
+                );
+            }
 
             // respawn countdowns
             for i in 0..2 {
@@ -4534,6 +4874,14 @@ fn main() {
                     }
                 }
             }
+        }
+
+        if paused && !selecting {
+            d.draw_rectangle(0, 0, W, H, Color::new(0, 0, 0, 160));
+            center_text(&mut d, "PAUSED", H / 2 - 80, 64, Color::WHITE);
+            center_text(&mut d, "ESC / P   resume", H / 2, 28, Color::YELLOW);
+            center_text(&mut d, "R   back to the menu", H / 2 + 40, 28, Color::WHITE);
+            center_text(&mut d, "F11 fullscreen     O mute", H / 2 + 80, 22, Color::LIGHTGRAY);
         }
 
         // white flash for big moments
